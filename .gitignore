@@ -1,0 +1,43 @@
+cat > .gitignore << 'EOF'
+# Dependências
+node_modules/
+vendor/
+
+# Ambientes / segredos
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+storage/logs/
+tmp/
+temp/
+
+# Cache
+.cache/
+.cache-loader/
+npm-cache/
+yarn-cache/
+.pnpm-store/
+
+# Diretórios de build
+dist/
+build/
+public/build/
+public/hot
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+
+# Uploads (se não quiser versionar)
+uploads/
+storage/app/public/
+EOF

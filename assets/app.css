@@ -1,0 +1,262 @@
+/* ==========================================================================
+   COHIDRO — app.css (mobile/layout ajustes)
+   Atualizado: 2025-10-21 (ajustado para sidebar colapsável com 1 botão)
+   --------------------------------------------------------------------------
+   Este arquivo consolida os ajustes para:
+   - Sidebar fixa com gradiente
+   - Conteúdo "fit" no mobile (sem scroll horizontal)
+   - Colapso da sidebar via .sidebar-collapsed (um único botão dentro dela)
+   ========================================================================== */
+
+/* Sidebar – deixa o flex esticar até o final do layout */
+.coh-sidebar {
+  position: relative;
+  /* height: 100vh; */
+  /* min-height: 100vh; */
+
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start; /* tudo começa no topo */
+
+  background: linear-gradient(
+    to bottom,
+    #4c6fff 0%,
+    #008fd3 40%,
+    #00b894 100%
+  ) !important;
+  color: #fff !important;
+}
+
+
+/* Estrutura principal da página também deve ocupar 100% */
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow-y: auto;   /* scroll normal da página */
+  overflow-x: hidden; /* evita scroll horizontal */
+}
+
+/* Em algumas páginas usamos .coh-layout com .row colando sidebar+conteúdo */
+.coh-layout,
+.coh-layout > .row {
+  min-height: 100vh;
+}
+
+/* Topbar acima da sidebar/backdrop no desktop e mobile */
+.coh-topbar { z-index: 2100; }
+
+/* ===== MOBILE FIXES ===== */
+@media (max-width: 991.98px) {
+  html, body { overflow-x: hidden; }
+
+  /* Sidebar no mobile como coluna fixa (sem overlay/slide) */
+  .coh-sidebar {
+    position: relative !important;
+    top: auto;
+    left: auto;
+    bottom: auto;
+    width: 260px;
+    max-width: 80vw;
+    transform: none !important;
+    z-index: 1020;
+  }
+
+  /* Conteúdo ocupa a tela toda (sem padding da sidebar) */
+  .coh-content {
+    min-height: 100dvh;  /* iOS/Android barras dinâmicas */
+    padding-left: 0 !important;
+    overflow-x: hidden;
+  }
+
+  /* Tabelas, grids e formulários que estouram no mobile */
+  .table { width: 100%; }
+  .table-wrap, .table-responsive, .table-responsive-sm, .table-responsive-md {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+  }
+
+  /* Se houver seções/tabs largas, garanta quebra */
+  .nav-tabs, .sec-title, .sec-header, .kpi-grid, .coh-form-grid {
+    min-width: 0;
+  }
+  .coh-form-grid {
+    display: grid;
+    grid-template-columns: 1fr !important; /* 1 col no mobile */
+    gap: .75rem;
+  }
+
+  /* Inputs e selects nunca maiores que a viewport */
+  .form-control, .form-select, .form-check-input, .form-check-label {
+    max-width: 100%;
+  }
+
+  /* Cards das seções do contrato */
+  .sec-card {
+    margin-inline: clamp(.25rem, 2vw, .75rem);
+  }
+
+  /* Backdrop deixa de ser usado no mobile */
+  .coh-sidebar-backdrop {
+    display: none !important;
+  }
+}
+
+/* Evita que algum container com overflow esconda o conteúdo perto da sidebar */
+.coh-content, .container, .container-fluid, main, section {
+  overflow: visible;
+}
+
+/* Utilitário para esconder scroll horizontal em wrappers inesperados */
+.no-x-scroll { overflow-x: hidden !important; }
+
+/* ========================================================================== */
+/* === Recolher/mostrar sidebar via .sidebar-collapsed ===================== */
+/* ========================================================================== */
+
+/* Quando o botão alterna a classe no <html>/<body>, encolhe a sidebar */
+html.sidebar-collapsed .coh-sidebar,
+body.sidebar-collapsed .coh-sidebar {
+  flex: 0 0 64px !important;
+  max-width: 64px !important;
+  width: 64px !important;
+  padding-left: .5rem !important;
+  padding-right: .5rem !important;
+  overflow-x: hidden !important;
+}
+
+/* Suaviza a transição (vale para ambos) */
+.coh-sidebar {
+  transition:
+    flex-basis .2s ease,
+    max-width .2s ease,
+    width .2s ease,
+    transform .2s ease;
+}
+
+/* Quando colapsada, esconde textos e só mostra ícones + botão */
+html.sidebar-collapsed .coh-sidebar .coh-sidebar-title,
+html.sidebar-collapsed .coh-sidebar .label-text {
+  display: none !important;
+}
+
+/* Centraliza ícones na coluna estreita */
+html.sidebar-collapsed .coh-sidebar .nav-link {
+  justify-content: center;
+}
+
+/* Cabeçalho mais compacto quando colapsada */
+html.sidebar-collapsed .coh-sidebar .coh-sidebar-header {
+  justify-content: center;
+}
+
+/* ====== VISUAL DA SIDEBAR (links, ícones, ativo) ====== */
+
+/* Links da sidebar */
+.coh-sidebar a.nav-link {
+  color: #fff !important;
+}
+
+/* Ícones dentro dos links */
+.coh-sidebar a.nav-link i,
+.coh-sidebar a.nav-link .bi {
+  color: #fff !important;
+}
+
+/* Hover */
+.coh-sidebar a.nav-link:hover {
+  color: #fff !important;
+  background-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Link ativo (selecionado) — nav-pills costuma sobrescrever */
+.coh-sidebar .nav-pills .nav-link.active,
+.coh-sidebar a.nav-link.active {
+  color: #fff !important;
+  background-color: rgba(255, 255, 255, 0.25) !important;
+}
+
+/* Linha divisória clara */
+.coh-sidebar hr {
+  border-color: rgba(255, 255, 255, 0.25) !important;
+}
+
+/* ========== Splash de abertura (PWA / Web) ========== */
+
+.coh-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: none; /* começa escondido */
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top, #0d6efd 0, #004a9f 40%, #002b5c 100%);
+  transition: opacity 0.35s ease-out, visibility 0.35s ease-out;
+}
+
+.coh-standalone .coh-splash {
+  display: flex; /* em modo app (PWA), já aparece desde o primeiro paint */
+}
+
+.coh-splash-inner {
+  text-align: center;
+  color: #fff;
+}
+
+.coh-splash-logo {
+  width: 120px;
+  max-width: 40vw;
+  height: auto;
+  margin-bottom: 18px;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.4));
+}
+
+.coh-splash-spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.35);
+  border-top-color: #fff;
+  animation: coh-splash-spin 0.7s linear infinite;
+  margin: 0 auto;
+  display: block;
+}
+
+@keyframes coh-splash-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* estado escondendo (fade out) */
+.coh-splash.coh-splash-hide {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* ========================================================================== */
+/* === NOVO: GARANTIR QUE SIDEBAR + CONTEÚDO ROLEM JUNTOS =================== */
+/* ========================================================================== */
+
+/* Wrapper principal ocupa a tela, mas NÃO prende o scroll */
+.coh-app-wrapper {
+  min-height: 100vh;      /* já bate com o inline do header */
+  display: flex;
+  flex-direction: column;
+  /* sem overflow: hidden; para não cortar nada */
+}
+
+/* Sidebar + conteúdo andam juntos com o scroll da página */
+.coh-app-main {
+  flex: 1 1 auto;
+  display: flex;          /* já está no inline do header, reforçando */
+  align-items: stretch;
+  width: 100%;
+  overflow-y: visible !important;    /* quem rola é o body agora (override do .overflow-auto do Bootstrap) */
+  overflow-x: hidden;
+}
+
+/* Conteúdo principal só usa o flex, sem scroll próprio */
+main.coh-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
