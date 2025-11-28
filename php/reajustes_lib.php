@@ -1,26 +1,25 @@
 <?php
-// reajustes_lib.php — compatível com:
-// emop_reajustamento(
-//   id, contrato_id, reajustes_percentual,
-//   valor_total_apos_reajuste, created_at
-// )
+// php/reajustes_lib.php
 
+// Função de normalização SEGURA (Compatível com a versão corrigida de medições)
 if (!function_exists('coh_norm_decimal')) {
-  /**
-   * Normaliza número em formato BR/US para string com ponto decimal.
-   */
   function coh_norm_decimal($v) {
     if ($v === null || $v === '') return null;
+    // Se já for numérico (ex: 1000.50), retorna string intacta
+    if (is_numeric($v)) return (string)$v;
+    
     $v = (string)$v;
-    $v = preg_replace('/\./', '', $v); // remove milhares
-    $v = str_replace(',', '.', $v);    // vírgula -> ponto
+    // Se for formato BR (1.000,50), remove ponto milhar e troca vírgula
+    if (strpos($v, ',') !== false) {
+        $v = str_replace('.', '', $v);
+        $v = str_replace(',', '.', $v);
+    }
     return is_numeric($v) ? (string)$v : null;
   }
 }
 
 /**
- * Garante a existência da tabela com as colunas esperadas
- * e força AUTO_INCREMENT no id (idempotente).
+ * Garante a tabela e ADICIONA COLUNAS NOVAS se faltarem
  */
 function coh_ensure_reajustamento_schema(mysqli $conn) {
   $sqlCreate = "CREATE TABLE IF NOT EXISTS `emop_reajustamento` (
@@ -28,38 +27,39 @@ function coh_ensure_reajustamento_schema(mysqli $conn) {
       `contrato_id` INT NOT NULL,
       `reajustes_percentual` DECIMAL(15,4) DEFAULT NULL,
       `valor_total_apos_reajuste` DECIMAL(15,2) DEFAULT NULL,
+      `data_base` VARCHAR(20) DEFAULT NULL,
+      `observacao` TEXT DEFAULT NULL,
       `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (`id`),
       KEY `idx_contrato` (`contrato_id`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
   $conn->query($sqlCreate);
 
-  @$conn->query("ALTER TABLE `emop_reajustamento`
-                 MODIFY `id` INT UNSIGNED NOT NULL AUTO_INCREMENT");
+  // Garante colunas novas caso a tabela já exista (Migration simples)
+  $cols = [];
+  if ($rs = $conn->query("SHOW COLUMNS FROM emop_reajustamento")) {
+      while($r = $rs->fetch_assoc()) $cols[] = $r['Field'];
+  }
+  if (!in_array('data_base', $cols)) {
+      $conn->query("ALTER TABLE emop_reajustamento ADD COLUMN data_base VARCHAR(20) DEFAULT NULL AFTER valor_total_apos_reajuste");
+  }
+  if (!in_array('observacao', $cols)) {
+      $conn->query("ALTER TABLE emop_reajustamento ADD COLUMN observacao TEXT DEFAULT NULL AFTER data_base");
+  }
+
+  @$conn->query("ALTER TABLE `emop_reajustamento` MODIFY `id` INT UNSIGNED NOT NULL AUTO_INCREMENT");
 }
 
 /**
- * Lê os reajustes de um contrato ordenados cronologicamente
- * e devolve também:
- *  - reajuste_anterior: acumulado até a linha anterior
- *  - valor_reajuste: diferença entre o acumulado atual e o anterior
- *
- * @return array<int, array{
- *   id:int,
- *   contrato_id:int,
- *   reajustes_percentual:?float,
- *   valor_total_apos_reajuste:?float,
- *   created_at:?string,
- *   reajuste_anterior:?float,
- *   valor_reajuste:?float
- * }>
+ * Busca reajustes com todos os campos novos
  */
 function coh_fetch_reajustes_with_prev(mysqli $conn, int $contrato_id): array {
   coh_ensure_reajustamento_schema($conn);
   $contrato_id = (int)$contrato_id;
 
+  // SELECT incluindo os novos campos
   $sql = "SELECT id, contrato_id, reajustes_percentual,
-                 valor_total_apos_reajuste, created_at
+                 valor_total_apos_reajuste, data_base, observacao, created_at
           FROM emop_reajustamento
           WHERE contrato_id = {$contrato_id}
           ORDER BY created_at ASC, id ASC";
@@ -74,16 +74,15 @@ function coh_fetch_reajustes_with_prev(mysqli $conn, int $contrato_id): array {
 
   $prev_acum = 0.0;
   foreach ($rows as $i => $r) {
-    $acum_total  = ($r['valor_total_apos_reajuste'] !== null
-                    ? (float)$r['valor_total_apos_reajuste']
-                    : $prev_acum);
+    $acum_total  = ($r['valor_total_apos_reajuste'] !== null ? (float)$r['valor_total_apos_reajuste'] : $prev_acum);
     $valor_linha = $acum_total - $prev_acum;
 
-    $rows[$i]['valor_total_apos_reajuste'] =
-      ($r['valor_total_apos_reajuste'] !== null ? (float)$r['valor_total_apos_reajuste'] : null);
-
-    $rows[$i]['reajustes_percentual'] =
-      ($r['reajustes_percentual'] !== null ? (float)$r['reajustes_percentual'] : null);
+    // Normaliza tipos
+    $rows[$i]['valor_total_apos_reajuste'] = $r['valor_total_apos_reajuste'] !== null ? (float)$r['valor_total_apos_reajuste'] : null;
+    $rows[$i]['reajustes_percentual']      = $r['reajustes_percentual'] !== null ? (float)$r['reajustes_percentual'] : null;
+    
+    // Mapeia para facilitar uso no frontend (alias)
+    $rows[$i]['percentual'] = $rows[$i]['reajustes_percentual'];
 
     $rows[$i]['reajuste_anterior'] = $prev_acum;
     $rows[$i]['valor_reajuste']    = $valor_linha;
@@ -95,67 +94,45 @@ function coh_fetch_reajustes_with_prev(mysqli $conn, int $contrato_id): array {
 }
 
 /**
- * Insere vários reajustes de uma vez.
- * $rows: cada item pode conter:
- *   - reajustes_percentual (ou percentual/perc)
- *   - valor_total_apos_reajuste (ou valor_total/valor)
- *
- * Aceita números em BR ("1.234,56") ou US ("1234.56").
+ * Insere reajustes salvando data_base e observacao
  */
 function coh_insert_reajustes_from_array(mysqli $conn, int $contrato_id, array $rows) {
   coh_ensure_reajustamento_schema($conn);
 
   $sql = "INSERT INTO `emop_reajustamento`
-          (`contrato_id`, `reajustes_percentual`, `valor_total_apos_reajuste`, `created_at`)
-          VALUES (?,?,?, NOW())";
+          (`contrato_id`, `reajustes_percentual`, `valor_total_apos_reajuste`, `data_base`, `observacao`, `created_at`)
+          VALUES (?,?,?,?,?, NOW())";
 
   $st = $conn->prepare($sql);
-  if (!$st) {
-    throw new Exception('Falha ao preparar statement de reajuste: ' . ($conn->error ?: 'erro desconhecido'));
-  }
+  if (!$st) throw new Exception('Erro prepare reajuste: ' . $conn->error);
 
   foreach ($rows as $r) {
-    $perc  = coh_norm_decimal(
-               $r['reajustes_percentual']
-               ?? $r['percentual']
-               ?? $r['perc']
-               ?? null
-             );
-    $valor = coh_norm_decimal(
-               $r['valor_total_apos_reajuste']
-               ?? $r['valor_total']
-               ?? $r['valor']
-               ?? null
-             );
+    $perc  = coh_norm_decimal($r['reajustes_percentual'] ?? $r['percentual'] ?? $r['perc'] ?? null);
+    $valor = coh_norm_decimal($r['valor_total_apos_reajuste'] ?? $r['valor_total'] ?? $r['valor'] ?? null);
+    $dt    = isset($r['data_base']) ? (string)$r['data_base'] : null;
+    $obs   = isset($r['observacao']) ? (string)$r['observacao'] : null;
 
-    // contrato_id (i), reajustes_percentual (d), valor_total_apos_reajuste (d)
-    if (!$st->bind_param("idd", $contrato_id, $perc, $valor)) {
-      $err = $conn->error ?: $st->error;
-      throw new Exception('Falha ao bind do reajuste: ' . $err);
+    // Se estiver tudo vazio, pula
+    if ($perc === null && $valor === null && $dt === null) continue;
+
+    // Bind: i (int), d (double), d (double), s (string), s (string)
+    if (!$st->bind_param("iddss", $contrato_id, $perc, $valor, $dt, $obs)) {
+      throw new Exception('Erro bind reajuste: ' . $st->error);
     }
     if (!$st->execute()) {
-      $err = $conn->error ?: $st->error;
-      throw new Exception('Falha ao inserir reajuste: ' . $err);
+      throw new Exception('Erro execute reajuste: ' . $st->error);
     }
   }
-
   $st->close();
 }
 
-/**
- * Exclusão simples por id + contrato.
- */
 function coh_delete_reajuste(mysqli $conn, int $contrato_id, int $reajuste_id) {
   coh_ensure_reajustamento_schema($conn);
-  $sql = "DELETE FROM `emop_reajustamento`
-          WHERE `id`=? AND `contrato_id`=?";
+  $sql = "DELETE FROM `emop_reajustamento` WHERE `id`=? AND `contrato_id`=?";
   if ($st = $conn->prepare($sql)) {
     $st->bind_param("ii", $reajuste_id, $contrato_id);
-    if (!$st->execute()) {
-      throw new Exception('Falha ao excluir reajuste: '.$st->error);
-    }
+    if (!$st->execute()) throw new Exception('Erro delete reajuste: '.$st->error);
     $st->close();
-  } else {
-    throw new Exception('Falha ao preparar exclusão de reajuste: ' . ($conn->error ?: 'erro desconhecido'));
   }
 }
+?>

@@ -72,15 +72,12 @@ $can_edit_immediately = in_array($user_level, [2,5], true) || (function_exists('
 // =========================================================================
 function coh_clean_currency($val) {
     if (empty($val)) return null;
-    if (is_numeric($val)) return $val; // Já é numero
-    // Remove tudo que não é digito, ponto, virgula ou sinal de menos
+    if (is_numeric($val)) return $val; 
     $val = preg_replace('/[^\d.,\-]/', '', $val);
     if ($val === '') return null;
-    
-    // Se tem vírgula (ex: 1.000,00 ou 1000,00), troca pra ponto
     if (strpos($val, ',') !== false) {
-        $val = str_replace('.', '', $val); // Tira ponto de milhar
-        $val = str_replace(',', '.', $val); // Troca virgula decimal por ponto
+        $val = str_replace('.', '', $val); 
+        $val = str_replace(',', '.', $val); 
     }
     return $val;
 }
@@ -90,14 +87,8 @@ $decode_json_array = function($v){
   if (empty($v) || !is_string($v)) return [];
   $v = trim($v);
   if ($v === '' || $v === '[]') return [];
-
-  // Tenta decode direto
   $d = json_decode($v, true);
-  
-  // Tenta tratar double-encoding
   if (is_string($d)) $d = json_decode($d, true);
-
-  // Tenta stripslashes se falhar
   if (json_last_error() !== JSON_ERROR_NONE) {
       $v_clean = stripslashes($v);
       $d = json_decode($v_clean, true);
@@ -159,6 +150,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   // ===== Salvar direto (2/5) =====
   if ($can_edit_immediately && in_array($action, ['salvar','salvar_direto'], true)) {
+    
+    // Array para guardar o log de alterações
+    $alteracoes_realizadas = [];
 
     try {
       // 1. UPDATE dados principais do contrato
@@ -192,6 +186,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
           }
 
+          // --- LOG DE ALTERAÇÃO ---
+          $oldVal = isset($rowNow[$c]) ? (string)$rowNow[$c] : '';
+          $newVal = (string)$v;
+          
+          if ($oldVal === '' && $newVal === '') { /* nada */ }
+          elseif ($oldVal !== $newVal) {
+              $ehNumerico = is_numeric($oldVal) && is_numeric($newVal);
+              $diferente = true;
+              if ($ehNumerico) {
+                  if (abs((float)$oldVal - (float)$newVal) < 0.0001) $diferente = false;
+              }
+              if ($diferente) {
+                  $nomeCampo = str_replace('_', ' ', $c);
+                  $alteracoes_realizadas[] = "Campo <strong>{$nomeCampo}</strong> atualizado.";
+              }
+          }
+
           $sets[]   = "`{$c}` = ?";
           $params[] = $v;
           $types   .= 's';
@@ -209,33 +220,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
       }
 
-      // =======================================================
-      // 2. PROCESSAMENTO DE RASCUNHOS (Arrays JSON)
-      // =======================================================
+      // 2. PROCESSAMENTO DE RASCUNHOS
       $m_raw = $get_array_from_post(['novas_medicoes_json','novas_medicoes']);
       $a_raw = $get_array_from_post(['novos_aditivos_json','novos_aditivos']);
       $r_raw = $get_array_from_post(['novos_reajustes_json','novos_reajustes']);
 
-      // --- FILTRAGEM E LIMPEZA DE MEDIÇÕES ---
+      // --- FILTRAGEM ---
       $m = []; 
       if (is_array($m_raw)) {
         foreach ($m_raw as $it) {
-            // Verifica se tem dados mínimos
             $temData = !empty($it['data_medicao']) || !empty($it['data']);
             $temValor = isset($it['valor_rs']) && trim((string)$it['valor_rs']) !== '';
-            
             if ($temData || $temValor) {
-                // LIMPEZA CRÍTICA: converte moeda BR para US antes de salvar
                 if (isset($it['valor_rs'])) $it['valor_rs'] = coh_clean_currency($it['valor_rs']);
                 if (isset($it['acumulado_rs'])) $it['acumulado_rs'] = coh_clean_currency($it['acumulado_rs']);
                 if (isset($it['percentual'])) $it['percentual'] = coh_clean_currency($it['percentual']);
-                
                 $m[] = $it;
+                $alteracoes_realizadas[] = "Nova <strong>Medição</strong> adicionada (Data: " . ($it['data_medicao']??$it['data']??'—') . ")";
             }
         }
       }
 
-      // --- FILTRAGEM E LIMPEZA DE ADITIVOS ---
       $a = []; 
       if (is_array($a_raw)) {
         foreach ($a_raw as $it) {
@@ -243,35 +248,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (isset($it['valor_aditivo_total'])) $it['valor_aditivo_total'] = coh_clean_currency($it['valor_aditivo_total']);
                 if (isset($it['valor_total_apos_aditivo'])) $it['valor_total_apos_aditivo'] = coh_clean_currency($it['valor_total_apos_aditivo']);
                 $a[] = $it;
+                $alteracoes_realizadas[] = "Novo <strong>Aditivo</strong> adicionado (Nº " . ($it['numero_aditivo']??'—') . ")";
             }
         }
       }
 
-      // --- FILTRAGEM E LIMPEZA DE REAJUSTES ---
       $r = []; 
       if (is_array($r_raw)) {
         foreach ($r_raw as $it) {
-            if (!empty($it['indice']) || !empty($it['valor_total_apos_reajuste'])) {
+            if (!empty($it['data_base']) || !empty($it['percentual']) || !empty($it['valor_total_apos_reajuste'])) {
                 if (isset($it['percentual'])) $it['percentual'] = coh_clean_currency($it['percentual']);
                 if (isset($it['valor_total_apos_reajuste'])) $it['valor_total_apos_reajuste'] = coh_clean_currency($it['valor_total_apos_reajuste']);
                 $r[] = $it;
+                $alteracoes_realizadas[] = "Novo <strong>Reajuste</strong> adicionado (Data base: " . ($it['data_base']??'—') . ")";
             }
         }
       }
 
-      // INSERÇÃO
       if ($m) coh_insert_medicoes_from_array($conn,$contrato_id,$m);
       if ($a) coh_insert_aditivos_from_array($conn,$contrato_id,$a);
       if ($r) coh_insert_reajustes_from_array($conn,$contrato_id,$r);
 
-      // Deletes individuais
-      if (!empty($_POST['delete_medicao_id']))  coh_delete_medicao($conn,$contrato_id,(int)$_POST['delete_medicao_id']);
-      if (!empty($_POST['delete_aditivo_id']))  coh_delete_aditivo($conn,$contrato_id,(int)$_POST['delete_aditivo_id']);
-      if (!empty($_POST['delete_reajuste_id'])) coh_delete_reajuste($conn,$contrato_id,(int)$_POST['delete_reajuste_id']);
-
-      // =========================================================
-      // 3. ATUALIZAÇÃO DOS TOTAIS DO CONTRATO
-      // =========================================================
+      // 3. ATUALIZAÇÃO DOS TOTAIS
       if ($contrato_id > 0) {
         $baseContrato = 0.0;
         if ($stB = $conn->prepare("SELECT COALESCE(Valor_Do_Contrato, 0) FROM emop_contratos WHERE id=?")) {
@@ -327,6 +325,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       }
 
       flash_set('success','Alterações salvas com sucesso.');
+      
+      // >>> SALVA LOG NA SESSÃO
+      if (!empty($alteracoes_realizadas)) {
+          $_SESSION['feedback_changes'] = $alteracoes_realizadas;
+      }
+
+      header("Location: form_contratos.php?id=" . $contrato_id);
+      exit;
 
     } catch (Throwable $e) {
       flash_set('danger','Erro ao salvar: '.$e->getMessage());
@@ -390,7 +396,46 @@ require_once __DIR__ . '/partials/topbar.php';
 require_once __DIR__ . '/partials/sidebar.php';
 
 echo '<main class="container my-4">';
-if ($contrato_id > 0 && empty($row)) echo '<div class="alert alert-warning">Contrato não encontrado ou sem permissão.</div>';
+
+// >>> [REMOVIDO ROW/COL wrapper para alinhar com sessions] <<<
+
+if ($contrato_id > 0 && empty($row)) {
+    echo '<div class="alert alert-warning mb-3">Contrato não encontrado ou sem permissão.</div>';
+}
+
+// >>> EXIBIÇÃO DO LOG DE ALTERAÇÕES <<<
+if (isset($_SESSION['feedback_changes']) && is_array($_SESSION['feedback_changes'])) {
+    echo '<div class="alert alert-info alert-dismissible fade show shadow-sm mb-3" role="alert">
+            <h6 class="alert-heading"><i class="bi bi-info-circle-fill"></i> Resumo das alterações realizadas:</h6>
+            <ul class="mb-0 small">';
+    foreach ($_SESSION['feedback_changes'] as $msg) {
+        echo "<li>{$msg}</li>";
+    }
+    echo '  </ul>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>';
+    unset($_SESSION['feedback_changes']);
+}
+
+// Exibe também as mensagens padrão de Sucesso/Erro (flash)
+if (isset($_SESSION['flash_messages'])) {
+     foreach ($_SESSION['flash_messages'] as $f) {
+         $type = ($f['type'] === 'error') ? 'danger' : $f['type'];
+         echo '<div class="alert alert-'.$type.' alert-dismissible fade show mb-3" role="alert">' . 
+                $f['message'] . 
+                '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+               </div>';
+     }
+     unset($_SESSION['flash_messages']);
+} else {
+    // Fallback se usar outra função de flash (ex: flash_display())
+    if (function_exists('flash_display')) {
+        flash_display(); 
+    }
+}
+
+// >>> FIM DA ÁREA DE MENSAGENS <<<
+
 if (!$HIDE_FORM && ($contrato_id || $is_new)) require_once __DIR__ . '/partials/form_emop_contratos.php';
 else require_once __DIR__ . '/partials/form_contratos_busca.php';
 echo '</main>';
@@ -443,14 +488,11 @@ document.addEventListener('DOMContentLoaded', function(){
     COH.draft.aditivos.push(obj); syncHidden(); renderAdi();
   };
   window.cohAddReajuste = function(p){
-    const obj = Object.assign({ _label: `Reajuste ${p.indice}`, _desc: `Perc: ${p.percentual}` }, p);
+    const obj = Object.assign({ _label: `Reajuste ${p.data_base||p.indice}`, _desc: `Perc: ${p.percentual}` }, p);
     COH.draft.reajustes.push(obj); syncHidden(); renderRea();
   };
 })();
 
-// === FUNÇÕES DE AÇÃO NO BANCO (Exclusão e Edição de itens salvos) ===
-
-// 1. Exclusão
 window.cohDeleteDbItem = function(tipo, id) {
     if (!confirm('ATENÇÃO: Você está prestes a excluir um registro salvo no banco.\n\nSe este item afetar o acumulado, os valores serão recalculados.\nDeseja continuar?')) return;
     const fd = new FormData(); fd.append('action','delete_item'); fd.append('type',tipo); fd.append('id',id);
@@ -464,7 +506,6 @@ window.cohDeleteDbItem = function(tipo, id) {
     .catch(e => alert('Erro de conexão.'));
 };
 
-// 2. Edição (Carregar no Modal)
 window.cohEditDbItem = function(tipo, item) {
     let modalId = '';
     const fmt = v => (typeof v === 'number') ? v.toLocaleString('pt-BR',{minimumFractionDigits:2}) : (v||'');
@@ -481,7 +522,6 @@ window.cohEditDbItem = function(tipo, item) {
             if(inpValor) inpValor.value = fmt(item.valor_rs);
             if(txtObs) txtObs.value = item.observacao || '';
             
-            // Dispara input para recalcular acumulado e percentual
             if(inpValor) inpValor.dispatchEvent(new Event('input', {bubbles:true}));
         }
     } 
@@ -510,17 +550,17 @@ window.cohEditDbItem = function(tipo, item) {
         modalId = 'modalReajuste';
         let root = document.getElementById(modalId);
         if(root){
-            let inpInd = root.querySelector('input[name="indice"]');
-            let inpPerc = root.querySelector('input[name="percentual"]');
             let inpData = root.querySelector('input[name="data_base"]');
+            let inpPerc = root.querySelector('input[name="percentual"]');
             let inpValTot = root.querySelector('input[name="valor_total_apos_reajuste"]');
             let txtObs = root.querySelector('textarea[name="observacao"]');
 
-            if(inpInd) inpInd.value = item.indice || '';
-            if(inpPerc) inpPerc.value = item.percentual || (item.reajustes_percentual ? String(item.reajustes_percentual).replace('.',',') : '');
             if(inpData) inpData.value = item.data_base || '';
+            if(inpPerc) inpPerc.value = item.percentual || (item.reajustes_percentual ? String(item.reajustes_percentual).replace('.',',') : '');
             if(inpValTot) inpValTot.value = fmt(item.valor_total_apos_reajuste);
             if(txtObs) txtObs.value = item.observacao || '';
+            
+            if(inpValTot) inpValTot.dispatchEvent(new Event('change', {bubbles:true}));
         }
     }
 
@@ -530,4 +570,39 @@ window.cohEditDbItem = function(tipo, item) {
         setTimeout(()=> alert('MODO DE EDIÇÃO:\n\n1. Dados carregados no formulário.\n2. Faça os ajustes e salve como NOVO.\n3. Exclua o item antigo da lista abaixo.'), 300);
     }
 };
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    function startTimers() {
+        const timers = document.querySelectorAll('.timer-24h');
+        
+        setInterval(() => {
+            timers.forEach(span => {
+                let seconds = parseInt(span.getAttribute('data-seconds'), 10);
+                
+                if (seconds <= 0) {
+                    span.innerHTML = "Tempo esgotado";
+                    var btnGroup = span.closest('td').querySelector('.btn-group');
+                    if(btnGroup) btnGroup.remove();
+                    return;
+                }
+                
+                seconds--; 
+                span.setAttribute('data-seconds', seconds);
+                
+                const h = Math.floor(seconds / 3600);
+                const m = Math.floor((seconds % 3600) / 60);
+                const s = seconds % 60;
+                
+                const hDisplay = h < 10 ? '0' + h : h;
+                const mDisplay = m < 10 ? '0' + m : m;
+                const sDisplay = s < 10 ? '0' + s : s;
+                
+                span.textContent = `Restam: ${hDisplay}:${mDisplay}:${sDisplay}`;
+            });
+        }, 1000);
+    }
+    startTimers();
+});
 </script>
