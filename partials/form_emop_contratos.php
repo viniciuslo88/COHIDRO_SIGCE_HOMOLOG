@@ -94,17 +94,8 @@ $show_form = (!$HIDE_FORM) && (($id && !$load_error) || $is_new);
       </div>
     </div>
     
-    <!-- Legenda de campos alterados -->
-    <div class="coh-legend-wrap" style="display:flex;justify-content:center;">
-      <div class="alert alert-secondary coh-legend text-center m-0" 
-           style="width:100%;max-width:1100px;border-radius:10px;">
-        <i class="bi bi-magic me-1"></i>
-        Campos <strong>alterados</strong> ficam destacados e o rótulo recebe um selo
-        <span class="badge text-bg-success">alterado</span>.
-      </div>
-    </div>
     <br>
-
+    
   <!-- Formulário principal -->
   <form id="coh-form" method="post" action="" class="mx-auto" style="max-width: 1100px;" data-coh-form="emop-contrato">
     <input type="hidden" name="csrf" value="<?= e($csrf) ?>">
