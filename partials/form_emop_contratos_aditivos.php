@@ -4,120 +4,96 @@
 if (!function_exists('e')) { function e($v){ return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); } }
 if (!function_exists('coh_brl')) { function coh_brl($n){ return 'R$ '.number_format((float)$n, 2, ',', '.'); } }
 
-// =============================================================
-// 1) Descobre ID do contrato atual
-//    Na tela de busca não existe $row['id'] => $__cid fica 0
-// =============================================================
-$__cid = 0;
-if (isset($row) && is_array($row) && !empty($row['id'])) {
-    $__cid = (int)$row['id'];
-} elseif (isset($id)) {
-    $__cid = (int)$id;
+$__cid = (int)($id ?? ($row['id'] ?? 0));
+$pode_ver_botoes = isset($user_level) ? ($user_level >= 1) : false;
+$is_read_only     = isset($is_read_only) ? $is_read_only : false;
+
+// === CÁLCULO MANUAL DA BASE DO CONTRATO PARA O JS ===
+// Pega valor original
+$valor_original = 0.0;
+if (isset($row) && !empty($row['Valor_Do_Contrato'])) {
+     $raw = trim((string)$row['Valor_Do_Contrato']);
+     $raw = str_replace(['.', ','], ['', '.'], $raw);
+     $valor_original = (float)$raw;
 }
 
-// =============================================================
-// 2) GUARDA FORTE: se não tiver contrato carregado, NÃO renderiza
-//    Isso impede que o botão apareça na tela de busca / topbar
-// =============================================================
-if ($__cid <= 0) {
-    // Opcional: comentário para debug
-    // echo '<!-- aditivos: nenhum contrato carregado, partial não renderizado -->';
-    return;
+// Soma aditivos existentes no banco e pega o último acumulado
+$soma_aditivos_banco = 0.0;
+$ultimo_acumulado    = 0.0;
+if ($__cid > 0) {
+    // Soma dos valores de aditivo
+    $qSoma = "SELECT SUM(valor_aditivo_total) as total FROM emop_aditivos WHERE contrato_id = $__cid";
+    if($rsS = $conn->query($qSoma)){
+        $rS = $rsS->fetch_assoc();
+        $soma_aditivos_banco = (float)($rS['total'] ?? 0);
+    }
+
+    // Último "valor_total_apos_aditivo" gravado (contrato após o último aditivo)
+    $qUlt = "SELECT valor_total_apos_aditivo 
+             FROM emop_aditivos 
+             WHERE contrato_id = $__cid 
+             ORDER BY created_at DESC, id DESC 
+             LIMIT 1";
+    if($rsU = $conn->query($qUlt)){
+        $rU = $rsU->fetch_assoc();
+        $ultimo_acumulado = (float)($rU['valor_total_apos_aditivo'] ?? 0);
+    }
 }
 
-$tem_permissao_geral = isset($user_level) ? ($user_level >= 2) : true;
-
-$valor_base_contrato = 0.0;
-if (isset($row) && is_array($row) && isset($row['Valor_Do_Contrato']) && $row['Valor_Do_Contrato'] !== '') {
-  $raw = trim((string)$row['Valor_Do_Contrato']);
-  if ($raw !== '') {
-    $raw = str_replace(['.', ','], ['', '.'], $raw);
-    $valor_base_contrato = (float)$raw;
-  }
+// Base para o próximo aditivo:
+// 1) se tiver último acumulado > 0, usa ele;
+// 2) senão, se tiver soma de aditivos, usa original + soma;
+// 3) senão, só o original.
+$valor_base_contrato = $valor_original;
+if ($ultimo_acumulado > 0) {
+    $valor_base_contrato = $ultimo_acumulado;
+} elseif ($soma_aditivos_banco > 0) {
+    $valor_base_contrato = $valor_original + $soma_aditivos_banco;
 }
 
-// =============================================================
-// 3) Hiddens e JS de rascunho (compartilhados com medições/reajustes)
-// =============================================================
-if (!defined('COH_DRAFT_INPUTS')) {
-  define('COH_DRAFT_INPUTS', true);
-  echo '<input type="hidden" name="novas_medicoes_json"   id="novas_medicoes_json"   value="">' . PHP_EOL;
-  echo '<input type="hidden" name="novos_aditivos_json"   id="novos_aditivos_json"   value="">' . PHP_EOL;
-  echo '<input type="hidden" name="novos_reajustes_json"  id="novos_reajustes_json"  value="">' . PHP_EOL;
-}
 
+// INICIALIZAÇÃO JS GARANTIDA
 if (!defined('COH_DRAFT_JS')) {
   define('COH_DRAFT_JS', true);
   ?>
   <script>
   window.COH = window.COH || {};
-  COH.draft = COH.draft || { medicoes: [], aditivos: [], reajustes: [] };
-
-  function cohSetHiddenDraft(){
-    var m=document.getElementById('novas_medicoes_json'),
-        a=document.getElementById('novos_aditivos_json'),
-        r=document.getElementById('novos_reajustes_json');
-    if(m)m.value=JSON.stringify(COH.draft.medicoes);
-    if(a)a.value=JSON.stringify(COH.draft.aditivos);
-    if(r)r.value=JSON.stringify(COH.draft.reajustes);
-  }
+  window.COH.draft = window.COH.draft || { medicoes: [], aditivos: [], reajustes: [] };
+  
   function cohRenderDraft(listId, arr){
     var ul=document.getElementById(listId); if(!ul) return;
     ul.innerHTML='';
     arr.forEach(function(item, idx){
       var li=document.createElement('li');
-      li.className='d-flex align-items-start justify-content-between border rounded px-2 py-1 mb-1';
-      li.innerHTML =
-        '<div><strong>'+(item._label||'Item')+'</strong>'+
-        '<div class="small text-secondary">'+(item._desc||'')+'</div></div>'+
-        '<button type="button" class="btn btn-sm btn-outline-danger ms-2" data-remove="'+idx+'">Excluir</button>';
-      li.querySelector('button[data-remove]').addEventListener('click', function(ev){
-        ev.preventDefault(); ev.stopPropagation();
-        arr.splice(idx,1);
-        cohSetHiddenDraft();
-        cohRenderDraft(listId, arr);
+      li.className='d-flex align-items-start justify-content-between border rounded px-2 py-1 mb-1 bg-white';
+      li.innerHTML = '<div><span class="badge bg-warning text-dark me-2">Novo</span><strong>'+(item._label||'Item')+'</strong><div class="small text-secondary">'+(item._desc||'')+'</div></div><button type="button" class="btn btn-sm btn-outline-danger ms-2" data-remove="'+idx+'"><i class="bi bi-trash"></i></button>';
+      
+      // BOTÃO EXCLUIR RASCUNHO
+      li.querySelector('button[data-remove]').addEventListener('click', function(ev){ 
+          ev.preventDefault(); ev.stopPropagation(); 
+          arr.splice(idx,1); 
+          cohRenderDraft(listId, arr); 
+          // Sincroniza logo após excluir
+          if(window.cohForceSync) window.cohForceSync();
+          
+          // Atualiza hidden também ao excluir
+          try {
+              var iA = document.getElementById('novos_aditivos_json');
+              if (iA) iA.value = JSON.stringify(window.COH.draft.aditivos || []);
+          } catch(e){}
       });
       ul.appendChild(li);
     });
   }
-  window.cohAddMedicao = function(p){
-    var l='Medição '+(p.data_medicao||'');
-    var d='Valor: '+(p.valor_rs||'');
-    COH.draft.medicoes.push(Object.assign({_label:l,_desc:d}, p));
-    cohSetHiddenDraft();
-    cohRenderDraft('draft-list-medicoes', COH.draft.medicoes);
-  };
-  window.cohAddAditivo = function(p){
-    var l='Aditivo '+(p.numero_aditivo||'');
-    var d='Valor: '+(p.valor_aditivo_total||'');
-    COH.draft.aditivos.push(Object.assign({_label:l,_desc:d}, p));
-    cohSetHiddenDraft();
-    cohRenderDraft('draft-list-aditivos', COH.draft.aditivos);
-  };
-  window.cohAddReajuste = function(p){
-    var l='Reajuste '+(p.indice||'');
-    var d='Perc: '+(p.percentual||'');
-    COH.draft.reajustes.push(Object.assign({_label:l,_desc:d}, p));
-    cohSetHiddenDraft();
-    cohRenderDraft('draft-list-reajustes', COH.draft.reajustes);
-  };
   </script>
   <?php
 }
 
-// =============================================================
-// 4) Carrega aditivos salvos com created_by (regra 24h)
-// =============================================================
 require_once __DIR__ . '/../php/aditivos_lib.php';
 $__aditivos_salvos = [];
 if ($__cid > 0) {
   if (function_exists('coh_ensure_aditivos_schema')) coh_ensure_aditivos_schema($conn);
-  $sqlAd = "SELECT id, contrato_id, valor_aditivo_total, novo_prazo,
-                   valor_total_apos_aditivo, numero_aditivo, tipo,
-                   created_at, created_by, observacao
-            FROM emop_aditivos
-            WHERE contrato_id = ?
-            ORDER BY created_at ASC, id ASC";
+  $sqlAd = "SELECT id, contrato_id, valor_aditivo_total, novo_prazo, valor_total_apos_aditivo, numero_aditivo, tipo, created_at, observacao FROM emop_aditivos WHERE contrato_id = ? ORDER BY created_at ASC, id ASC";
   if ($st = $conn->prepare($sqlAd)) {
     $st->bind_param('i', $__cid);
     $st->execute();
@@ -129,7 +105,6 @@ if ($__cid > 0) {
       $__aditivos_salvos[] = [
         'id'                       => $r['id'],
         'created_at'               => $r['created_at'],
-        'created_by'               => $r['created_by'] ?? null,
         'novo_prazo'               => $r['novo_prazo'],
         'numero_aditivo'           => $r['numero_aditivo'],
         'tipo'                     => $r['tipo'],
@@ -145,75 +120,80 @@ if ($__cid > 0) {
 }
 ?>
 
-<ul id="draft-list-aditivos" class="list-unstyled mb-3"></ul>
-<button type="button" class="btn btn-outline-primary mb-3" data-bs-toggle="modal" data-bs-target="#modalAditivo">
-  + Adicionar Aditivo
-</button>
+<div id="wrapper-aditivos" class="w-100 mb-3" style="display: flow-root; position: relative;">
+    <ul id="draft-list-aditivos" class="list-unstyled mb-2"></ul>
 
-<?php if (!empty($__aditivos_salvos)): ?>
-  <div class="table-responsive mb-2">
-    <table class="table table-sm table-hover align-middle">
-      <thead class="table-light">
-        <tr>
-          <th>Data</th>
-          <th>Número/Tipo</th>
-          <th>Valor (R$)</th>
-          <th>Acumulado (R$)</th>
-          <th>Novo prazo</th>
-          <th class="text-end">Ações</th>
-        </tr>
-      </thead>
-      <tbody>
-        <?php foreach ($__aditivos_salvos as $a): ?>
-          <?php 
-             $pode_mexer = function_exists('coh_pode_alterar') 
-                           ? coh_pode_alterar($a['created_at'] ?? null, $tem_permissao_geral, $a['created_by'] ?? null) 
-                           : false;
-             $segundos_restantes = 0;
-             if ($pode_mexer && !empty($a['created_at'])) {
-                  $criado_em = strtotime($a['created_at']);
-                  $segundos_restantes = 86400 - (time() - $criado_em);
-                  if ($segundos_restantes < 0) $segundos_restantes = 0;
-             }
-          ?>
-          <tr>
-            <td><?= $a['created_at'] ? e(date('d/m/Y', strtotime($a['created_at']))) : '—' ?></td>
-            <td>
-              <strong><?= e($a['numero_aditivo'] ?? '') ?></strong><br>
-              <small class="text-muted"><?= e($a['tipo'] ?? '') ?></small>
-            </td>
-            <td><?= coh_brl($a['valor_aditivo_total'] ?? 0) ?></td>
-            <td><?= coh_brl($a['valor_total_apos_aditivo'] ?? 0) ?></td>
-            <td><?= $a['novo_prazo'] !== null ? e($a['novo_prazo']) : '—' ?></td>
-            <td class="text-end" style="min-width: 140px;">
-                <?php if ($pode_mexer): ?>
-                    <div class="btn-group btn-group-sm mb-1">
-                        <button type="button" class="btn btn-outline-secondary"
-                                onclick='cohEditDbItem("aditivo", <?= json_encode($a) ?>)' title="Editar">
-                            <i class="bi bi-pencil"></i>
-                        </button>
-                        <button type="button" class="btn btn-outline-danger"
-                                onclick="cohDeleteDbItem('aditivo', <?= $a['id'] ?>)" title="Excluir">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </div>
-                    <div class="text-danger small fw-bold timer-24h"
-                         data-seconds="<?= $segundos_restantes ?>"
-                         style="font-size: 0.7rem;">
-                        Calculando...
-                    </div>
-                <?php else: ?>
-                    <span class="badge text-bg-success">Salvo</span>
-                <?php endif; ?>
-            </td>
-          </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
-  </div>
-<?php else: ?>
-  <div class="text-muted small mb-2">Nenhum aditivo salvo no banco ainda.</div>
-<?php endif; ?>
+    <?php if(!$is_read_only): ?>
+    <div class="mb-3" style="position: static;">
+        <a href="javascript:void(0)" 
+           id="btn-add-aditivo-unique"
+           class="btn btn-outline-primary" 
+           role="button"
+           data-bs-toggle="modal" 
+           data-bs-target="#modalAditivo">
+           + Adicionar Aditivo
+        </a>
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($__aditivos_salvos)): ?>
+      <div class="table-responsive mb-2">
+        <table class="table table-sm table-hover align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>Data</th>
+              <th>Número/Tipo</th>
+              <th>Valor (R$)</th>
+              <th>Acumulado (R$)</th>
+              <th>Novo prazo</th>
+              <th class="text-end">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($__aditivos_salvos as $a): ?>
+              <?php 
+                 $segundos_restantes = 0;
+                 $pode_mexer = false;
+                 if ($pode_ver_botoes && !empty($a['created_at'])) {
+                      $criado_em = strtotime($a['created_at']);
+                      $segundos_restantes = 86400 - (time() - $criado_em);
+                      if ($user_level >= 5) {
+                          $pode_mexer = true;
+                      } else {
+                          $pode_mexer = ($segundos_restantes > 0);
+                      }
+                 }
+              ?>
+              <tr>
+                <td><?= $a['created_at'] ? e(date('d/m/Y', strtotime($a['created_at']))) : '—' ?></td>
+                <td><strong><?= e($a['numero_aditivo'] ?? '') ?></strong><br><small class="text-muted"><?= e($a['tipo'] ?? '') ?></small></td>
+                <td><?= coh_brl($a['valor_aditivo_total'] ?? 0) ?></td>
+                <td><?= coh_brl($a['valor_total_apos_aditivo'] ?? 0) ?></td>
+                <td><?= $a['novo_prazo'] !== null ? e($a['novo_prazo']) : '—' ?></td>
+                <td class="text-end" style="min-width: 140px;">
+                    <?php if ($pode_mexer): ?>
+                        <div class="btn-group btn-group-sm mb-1">
+                            <button type="button" class="btn btn-outline-secondary" onclick='cohEditDbItem("aditivo", <?= json_encode($a) ?>)' title="Editar"><i class="bi bi-pencil"></i></button>
+                            <button type="button" class="btn btn-outline-danger" onclick="cohDeleteDbItem('aditivo', <?= $a['id'] ?>)" title="Excluir"><i class="bi bi-trash"></i></button>
+                        </div>
+                        <?php if ($segundos_restantes > 0): ?>
+                        <div class="text-danger small fw-bold timer-24h" data-seconds="<?= $segundos_restantes ?>" style="font-size: 0.7rem;">Calculando...</div>
+                        <?php endif; ?>
+                    <?php elseif($pode_ver_botoes): ?>
+                        <span class="badge text-bg-secondary">Tempo Esgotado</span>
+                    <?php else: ?>
+                         <span class="badge text-bg-success">Salvo</span>
+                    <?php endif; ?>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    <?php else: ?>
+      <div class="text-muted small mb-2">Nenhum aditivo salvo no banco ainda.</div>
+    <?php endif; ?>
+</div>
 
 <input type="hidden" id="valor_base_contrato" value="<?= e($valor_base_contrato) ?>">
 
@@ -225,55 +205,166 @@ if ($__cid > 0) {
         <div class="col-md-3"><label class="form-label">Número</label><input type="text" name="numero_aditivo" class="form-control"></div>
         <div class="col-md-4"><label class="form-label">Data</label><input type="date" name="data" class="form-control"></div>
         <div class="col-md-5">
-          <label class="form-label">Tipo</label>
-          <select name="tipo" class="form-select">
-            <option value="">Selecione...</option>
-            <option value="PRAZO">Prazo</option>
-            <option value="VALOR">Valor</option>
-            <option value="AMBOS">Ambos</option>
-            <option value="RE-RATIFICACAO">Re-ratificação</option>
-            <option value="OBJETO">Objeto</option>
-            <option value="OUTROS">Outros</option>
-          </select>
+            <label class="form-label">Tipo</label>
+            <select name="tipo" id="selTipoAditivo" class="form-select">
+                <option value="">Selecione...</option>
+                <option value="PRAZO">Prazo</option>
+                <option value="VALOR">Valor</option>
+                <option value="AMBOS">Ambos (Prazo e Valor)</option>
+                <option value="RE-RATIFICACAO">Re-ratificação</option>
+                <option value="OBJETO">Objeto</option>
+                <option value="OUTROS">Outros</option>
+            </select>
         </div>
         <div class="col-md-6"><label class="form-label">Valor (R$)</label><input type="text" name="valor_aditivo_total" class="form-control" id="adt_valor" placeholder="0,00"></div>
-        <div class="col-md-6"><label class="form-label">Total Após (R$)</label><input type="text" name="valor_total_apos_aditivo" class="form-control" id="adt_total" placeholder="0,00"></div>
+        <div class="col-md-6"><label class="form-label">Total Após (R$)</label><input type="text" name="valor_total_apos_aditivo" class="form-control" id="adt_total" placeholder="0,00" readonly></div>
+        <div class="col-md-6" id="divNovoPrazo" style="display:none;"><label class="form-label">Novo Prazo</label><input type="text" name="novo_prazo" class="form-control" placeholder="Ex: 12 meses"></div>
         <div class="col-12"><label class="form-label">Observação</label><textarea name="observacao" class="form-control" rows="2"></textarea></div>
       </div>
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary" onclick="(function(){
-        var root=document.getElementById('modalAditivo');
-        var p={
-          numero_aditivo:root.querySelector('input[name=numero_aditivo]')?.value||'',
-          data:root.querySelector('input[name=data]')?.value||'',
-          tipo:root.querySelector('select[name=tipo]')?.value||'',
-          valor_aditivo_total:root.querySelector('input[name=valor_aditivo_total]')?.value||'',
-          valor_total_apos_aditivo:root.querySelector('input[name=valor_total_apos_aditivo]')?.value||'',
-          observacao:root.querySelector('textarea[name=observacao]')?.value||''
-        };
-        if(window.cohAddAditivo) window.cohAddAditivo(p);
-        root.querySelectorAll('input, select, textarea').forEach(el => el.value = '');
-        var m=bootstrap.Modal.getInstance(root); if(m)m.hide();
-      })()">Salvar no Rascunho</button>
+      <button type="button" class="btn btn-primary" onclick="salvarAditivoNoDraft()">Adicionar à Lista</button>
     </div>
   </div></div>
 </div>
 
 <script>
+function salvarAditivoNoDraft() {
+    var root = document.getElementById('modalAditivo');
+    var p = {
+        numero_aditivo:       root.querySelector('input[name=numero_aditivo]')?.value||'',
+        data:                 root.querySelector('input[name=data]')?.value||'',
+        tipo:                 root.querySelector('select[name=tipo]')?.value||'',
+        valor_aditivo_total:  root.querySelector('input[name=valor_aditivo_total]')?.value||'',
+        valor_total_apos_aditivo: root.querySelector('input[name=valor_total_apos_aditivo]')?.value||'',
+        novo_prazo:           root.querySelector('input[name=novo_prazo]')?.value||'',
+        observacao:           root.querySelector('textarea[name=observacao]')?.value||''
+    };
+    
+    // Validação simples: pelo menos um campo relevante
+    if (!p.numero_aditivo && !p.valor_aditivo_total && !p.novo_prazo && !p.observacao) {
+         alert('Preencha ao menos um campo principal.'); 
+         return;
+    }
+
+    // 1) Adiciona no objeto de rascunho para a UI
+    if (window.cohAddAditivo) {
+        window.cohAddAditivo(p);
+    }
+
+    // 2) Grava DIRETO no hidden novos_aditivos_json (sem depender do cohForceSync)
+    try {
+        var form = document.querySelector('form[data-form="emop-contrato"]') || document.getElementById('coh-form');
+        if (form) {
+            var inp = form.querySelector('input[name="novos_aditivos_json"]');
+            if (!inp) {
+                inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = 'novos_aditivos_json';
+                inp.id   = 'novos_aditivos_json';
+                form.appendChild(inp);
+            }
+            var arr = [];
+            if (inp.value && inp.value.trim() !== '' && inp.value.trim() !== '[]') {
+                try { arr = JSON.parse(inp.value); } catch(e){ arr = []; }
+            }
+            arr.push(p);
+            inp.value = JSON.stringify(arr);
+        }
+    } catch(e){
+        console.error('Erro ao atualizar novos_aditivos_json:', e);
+    }
+
+    // 3) Atualiza input hidden global (se existir) via cohForceSync também (seguro extra)
+    if (window.cohForceSync) window.cohForceSync();
+    
+    // 4) Limpa campos do modal
+    root.querySelectorAll('input, select, textarea').forEach(el => el.value = '');
+    var divPrazo = document.getElementById('divNovoPrazo');
+        if(divPrazo) divPrazo.style.display = 'none';
+
+    // 5) Fecha modal
+    var m = bootstrap.Modal.getInstance(root);
+    if (m) m.hide();
+}
+
 document.addEventListener('DOMContentLoaded', function(){
-  var modal = document.getElementById('modalAditivo'); if (!modal) return;
+
+  // Toggle do campo "Novo Prazo" conforme o tipo de aditivo
+  var selTipo = document.getElementById('selTipoAditivo');
+  var divPrazo = document.getElementById('divNovoPrazo');
+  if (selTipo && divPrazo) {
+      selTipo.addEventListener('change', function () {
+          var val = this.value;
+          if (val === 'PRAZO' || val === 'AMBOS') {
+              divPrazo.style.display = 'block';
+          } else {
+              divPrazo.style.display = 'none';
+              var inpPrazo = divPrazo.querySelector('input[name="novo_prazo"]');
+              if (inpPrazo) inpPrazo.value = '';
+          }
+      });
+  }
+
+  // ======== CÁLCULO "Total Após (R$)" NO MODAL ========
+
   var baseInput = document.getElementById('valor_base_contrato');
-  var valorBaseContrato = baseInput ? (parseFloat(String(baseInput.value)) || 0) : 0;
-  function parseBRL(str){ if (!str) return 0; str = String(str).trim().replace(/\./g, '').replace(',', '.'); var n = parseFloat(str); return isNaN(n) ? 0 : n; }
-  function formatBRL(n){ try { return n.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}); } catch(e){ return (Math.round(n*100)/100).toFixed(2).replace('.', ','); } }
+
+  // Função para limpar e converter BRL -> float
+  function parseBRL(str) {
+      if (!str) return 0;
+      str = String(str).trim();
+      // remove R$, espaços etc
+      str = str.replace(/[^\d.,\-]/g, '');
+      // troca separadores
+      str = str.replace(/\./g, '').replace(',', '.');
+      var n = parseFloat(str);
+      return isNaN(n) ? 0 : n;
+  }
+
+  // Formata float -> BRL (string)
+  function formatBRL(n) {
+      try {
+          return n.toLocaleString('pt-BR', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
+          });
+      } catch (e) {
+          var s = (Math.round(n * 100) / 100).toFixed(2);
+          return s.replace('.', ',');
+      }
+  }
+
+  var valorBaseContrato = baseInput ? parseBRL(baseInput.value) : 0;
+
   var inpValor = document.getElementById('adt_valor');
   var inpTotal = document.getElementById('adt_total');
+
   if (inpValor && inpTotal) {
-    function atualizarTotal(){ var vAd = parseBRL(inpValor.value); var total = valorBaseContrato + vAd; inpTotal.value = formatBRL(total); }
-    modal.addEventListener('shown.bs.modal', function(){ if(!inpTotal.value && inpTotal.value !== '0,00') { inpTotal.value = formatBRL(valorBaseContrato); } });
-    ['input','blur'].forEach(function(evt){ inpValor.addEventListener(evt, atualizarTotal); });
+
+      function atualizarTotal() {
+          var vAd = parseBRL(inpValor.value);
+          var total = valorBaseContrato + vAd;
+          inpTotal.value = formatBRL(total);
+      }
+
+      // Quando o modal abrir, já coloca o total com a base atual
+      var modal = document.getElementById('modalAditivo');
+      if (modal) {
+          modal.addEventListener('shown.bs.modal', function () {
+              // recalcula base do input (caso tenha mudado no back-end e a página foi recarregada)
+              valorBaseContrato = baseInput ? parseBRL(baseInput.value) : 0;
+              inpValor.value = '';
+              inpTotal.value = formatBRL(valorBaseContrato);
+          });
+      }
+
+      ['input', 'blur', 'change', 'keyup'].forEach(function (evt) {
+          inpValor.addEventListener(evt, atualizarTotal);
+      });
   }
+
 });
 </script>
+

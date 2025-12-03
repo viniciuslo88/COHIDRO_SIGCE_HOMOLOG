@@ -16,80 +16,6 @@ $__cid = (int)($id ?? ($row['id'] ?? 0));
 // nível de permissão geral (≥ 2 já podia salvar/editar antes)
 $tem_permissao_geral = isset($user_level) ? ($user_level >= 2) : true;
 
-// === HIDDENS (rascunho) ===
-if (!defined('COH_DRAFT_INPUTS')) {
-  define('COH_DRAFT_INPUTS', true);
-  echo '<input type="hidden" name="novas_medicoes_json" id="novas_medicoes_json" value="">' . PHP_EOL;
-  echo '<input type="hidden" name="novos_aditivos_json" id="novos_aditivos_json" value="">' . PHP_EOL;
-  echo '<input type="hidden" name="novos_reajustes_json" id="novos_reajustes_json" value="">' . PHP_EOL;
-}
-
-// === JS RASCUNHO (compartilhado com as 3 seções) ===
-if (!defined('COH_DRAFT_JS')) {
-  define('COH_DRAFT_JS', true);
-  ?>
-  <script>
-  window.COH = window.COH || {};
-  COH.draft = COH.draft || { medicoes: [], aditivos: [], reajustes: [] };
-
-  function cohSetHiddenDraft(){
-    var m=document.getElementById('novas_medicoes_json'),
-        a=document.getElementById('novos_aditivos_json'),
-        r=document.getElementById('novos_reajustes_json');
-    if(m) m.value = JSON.stringify(COH.draft.medicoes || []);
-    if(a) a.value = JSON.stringify(COH.draft.aditivos || []);
-    if(r) r.value = JSON.stringify(COH.draft.reajustes || []);
-  }
-
-  function cohRenderDraft(listId, arr){
-    var ul=document.getElementById(listId); if(!ul) return;
-    ul.innerHTML='';
-    (arr || []).forEach(function(item, idx){
-      var li=document.createElement('li');
-      li.className='d-flex align-items-start justify-content-between border rounded px-2 py-1 mb-1';
-      li.innerHTML =
-        '<div>' +
-          '<strong>'+(item._label||'Item')+'</strong>' +
-          '<div class="small text-secondary">'+(item._desc||'')+'</div>' +
-        '</div>' +
-        '<button type="button" class="btn btn-sm btn-outline-danger ms-2" data-remove="'+idx+'">Excluir</button>';
-      li.querySelector('button[data-remove]').addEventListener('click', function(ev){
-        ev.preventDefault(); ev.stopPropagation();
-        arr.splice(idx,1);
-        cohSetHiddenDraft();
-        cohRenderDraft(listId, arr);
-      });
-      ul.appendChild(li);
-    });
-  }
-
-  window.cohAddMedicao = function(p){
-    var l='Medição '+(p.data_medicao||'');
-    var d='Valor: '+(p.valor_rs||'');
-    COH.draft.medicoes.push(Object.assign({_label:l,_desc:d}, p));
-    cohSetHiddenDraft();
-    cohRenderDraft('draft-list-medicoes', COH.draft.medicoes);
-  };
-
-  window.cohAddAditivo = function(p){
-    var l='Aditivo '+(p.numero_aditivo||'');
-    var d='Valor: '+(p.valor_aditivo_total||'');
-    COH.draft.aditivos.push(Object.assign({_label:l,_desc:d}, p));
-    cohSetHiddenDraft();
-    cohRenderDraft('draft-list-aditivos', COH.draft.aditivos);
-  };
-
-  window.cohAddReajuste = function(p){
-    var l='Reajuste '+(p.data_base||'');
-    var d='Perc: '+(p.percentual||'');
-    COH.draft.reajustes.push(Object.assign({_label:l,_desc:d}, p));
-    cohSetHiddenDraft();
-    cohRenderDraft('draft-list-reajustes', COH.draft.reajustes);
-  };
-  </script>
-  <?php
-}
-
 // === VALOR BASE PARA CÁLCULO ===
 if (!function_exists('coh_parse_db_value')) {
     function coh_parse_db_value($v) {
@@ -124,6 +50,9 @@ $__reajustes_salvos = [];
 if ($__cid > 0) {
   $__reajustes_salvos = coh_fetch_reajustes_with_prev($conn, $__cid);
 }
+
+// Os inputs hidden de rascunho já foram criados em form_emop_contratos_medicoes.php
+// e o JS base de COH.draft/cohRenderDraft vem de Aditivos.
 ?>
 
 <ul id="draft-list-reajustes" class="list-unstyled mb-3"></ul>
@@ -206,7 +135,7 @@ if ($__cid > 0) {
 
 <input type="hidden" id="valor_base_calculo_reajuste" value="<?= number_format($valor_base_calculo, 2, '.', '') ?>">
 
-<div class="modal fade" id="modalReajuste" tabindex="-1">
+<div class="modal fade" id="modalReajuste" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered"><div class="modal-content">
     <div class="modal-header">
       <h5 class="modal-title">Novo Reajustamento</h5>
@@ -241,23 +170,67 @@ if ($__cid > 0) {
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary" onclick="(function(){
-        var root=document.getElementById('modalReajuste');
-        var p={
-           data_base: root.querySelector('input[name=data_base]')?.value||'',
-           percentual: root.querySelector('input[name=percentual]')?.value||'',
-           valor_total_apos_reajuste: root.querySelector('input[name=valor_total_apos_reajuste]')?.value||'',
-           observacao: root.querySelector('textarea[name=observacao]')?.value||''
-        };
-        if(window.cohAddReajuste) window.cohAddReajuste(p);
-        root.querySelectorAll('input,textarea').forEach(function(el){ el.value=''; });
-        var m=bootstrap.Modal.getInstance(root); if(m)m.hide();
-      })()">Salvar no Rascunho</button>
+      <button type="button" class="btn btn-primary" onclick="salvarReajusteNoDraft()">Salvar no Rascunho</button>
     </div>
   </div></div>
 </div>
 
 <script>
+function salvarReajusteNoDraft() {
+    var root = document.getElementById('modalReajuste');
+    if (!root) return;
+
+    var p = {
+       data_base: root.querySelector('input[name="data_base"]')?.value || '',
+       percentual: root.querySelector('input[name="percentual"]')?.value || '',
+       valor_total_apos_reajuste: root.querySelector('input[name="valor_total_apos_reajuste"]')?.value || '',
+       observacao: root.querySelector('textarea[name="observacao"]')?.value || ''
+    };
+
+    if (!p.data_base && !p.percentual && !p.valor_total_apos_reajuste && !p.observacao) {
+        alert('Preencha pelo menos data, percentual, valor ou observação.');
+        return;
+    }
+
+    // 1) Adiciona no draft visual
+    if (window.cohAddReajuste) {
+        window.cohAddReajuste(p);
+    }
+
+    // 2) Atualiza hidden "novos_reajustes_json" imediatamente
+    try {
+        var form = document.querySelector('form[data-form="emop-contrato"]') || document.getElementById('coh-form');
+        if (form) {
+            var inp = form.querySelector('input[name="novos_reajustes_json"]');
+            if (!inp) {
+                inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = 'novos_reajustes_json';
+                inp.id   = 'novos_reajustes_json';
+                form.appendChild(inp);
+            }
+            var arr = [];
+            if (inp.value && inp.value.trim() !== '' && inp.value.trim() !== '[]') {
+                try { arr = JSON.parse(inp.value); } catch(e){ arr = []; }
+            }
+            arr.push(p);
+            inp.value = JSON.stringify(arr);
+        }
+    } catch(e){
+        console.error('Erro ao atualizar novos_reajustes_json:', e);
+    }
+
+    // 3) Sincroniza global (extra)
+    if (window.cohForceSync) window.cohForceSync();
+
+    // 4) Limpa campos
+    root.querySelectorAll('input,textarea').forEach(function(el){ el.value=''; });
+
+    // 5) Fecha modal
+    var m = bootstrap.Modal.getInstance(root);
+    if (m) m.hide();
+}
+
 document.addEventListener('DOMContentLoaded', function(){
     const inpPercentual = document.getElementById('reaj_percentual');
     const inpTotal      = document.getElementById('reaj_total');

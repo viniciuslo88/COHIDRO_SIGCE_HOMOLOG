@@ -1,19 +1,18 @@
 <?php
 // php/solicitacao_aprov_sucesso.php
 // Tela de confirmação da solicitação enviada ao coordenador.
-// Pode ser chamada embutida (via require) ou diretamente (?req_id=).
+// Exibe o resumo do que foi alterado.
 
 if (session_status() === PHP_SESSION_NONE) { session_start(); }
 require_once __DIR__ . '/conn.php';
 
-// Helper (evita redeclarar se vier do chamador)
+// Helper de escape
 if (!function_exists('e')) {
     function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 }
 
 /**
- * Mapa: nome do campo (name="" no form_emop_update) -> rótulo exibido no formulário
- * Ajuste/complete se adicionar novos campos no formulário.
+ * Mapa: nome do campo (name="" no form) -> rótulo amigável
  */
 $FIELD_LABELS = [
     'Diretoria' => 'Diretoria',
@@ -74,10 +73,10 @@ $FIELD_LABELS = [
 $req_id       = null;
 $contrato_id  = $contrato_id  ?? null;
 $quando_str   = $quando_str   ?? null;
-$changes      = $changes      ?? [];   // ['Campo_do_Form' => [before, after]]
-$medicoes_fmt = $medicoes_fmt ?? [];   // [{data_br, valor_brl, acumulado_brl, percentual_txt, obs}]
-$aditivos_fmt = $aditivos_fmt ?? [];   // [{numero, data_br, tipo, valor_brl, valor_total_brl, obs}]
-$reajustes_fmt= $reajustes_fmt?? [];   // [{indice, percentual_txt, data_base_br, valor_total_brl, obs}]
+$changes      = $changes      ?? [];   
+$medicoes_fmt = $medicoes_fmt ?? [];   
+$aditivos_fmt = $aditivos_fmt ?? [];   
+$reajustes_fmt= $reajustes_fmt?? [];   
 
 // Helpers de formatação
 $fmt_date = function($iso){
@@ -86,10 +85,11 @@ $fmt_date = function($iso){
         [$y,$m,$d] = explode('-', $iso);
         return sprintf('%02d/%02d/%04d', (int)$d, (int)$m, (int)$y);
     }
-    return $iso;
+    return $iso; // Já está formatado ou vazio
 };
 $fmt_brl = function($n){
     if ($n === '' || $n === null) return '';
+    // Limpa se já vier formatado errado, garante float
     $n = (float)str_replace(['.',','], ['','.' ], (string)$n);
     return 'R$ ' . number_format($n, 2, ',', '.');
 };
@@ -99,7 +99,7 @@ $fmt_pct = function($p){
     return $p . '%';
 };
 
-// 0) Se o chamador passou payload em memória, usa direto
+// 0) Se o chamador (form_contratos.php) passou payload em memória, usa direto
 $payload = [];
 if (!empty($APROV_PAYLOAD) && is_array($APROV_PAYLOAD)) {
     $payload = $APROV_PAYLOAD;
@@ -107,65 +107,73 @@ if (!empty($APROV_PAYLOAD) && is_array($APROV_PAYLOAD)) {
     $payload = $_SESSION['APROV_PAYLOAD'];
 }
 
-// 1) Contexto do chamador via $__success_ctx
+// 1) Contexto do chamador via include (fallback)
 if (isset($__success_ctx) && is_array($__success_ctx)) {
     if (!empty($__success_ctx['req_id'])) {
         $req_id = (int)$__success_ctx['req_id'];
     }
 }
-// 2) GET
+// 2) Via GET (se o usuário acessou via link direto)
 if (!$req_id && isset($_GET['req_id'])) {
     $req_id = (int)$_GET['req_id'];
 }
 
-// Se payload veio do chamador/SESSION, constroi as listas a partir dele
+// Se payload foi encontrado, constroi as listas
 if ($payload) {
     if (!$contrato_id && isset($payload['contrato_id'])) $contrato_id = (int)$payload['contrato_id'];
     $quando_str = $quando_str ?: date('d/m/Y H:i');
 
+    // Campos principais
     if (!empty($payload['campos']) && is_array($payload['campos'])) {
         foreach ($payload['campos'] as $campo_form => $novo) {
             $changes[$campo_form] = [null, $novo];
         }
     }
+
+    // Medições
     if (!empty($payload['novas_medicoes']) && is_array($payload['novas_medicoes'])) {
         foreach ($payload['novas_medicoes'] as $m) {
             $data = $m['data_medicao'] ?? $m['data'] ?? '';
             $medicoes_fmt[] = [
                 'data_br'        => $fmt_date($data),
-                'valor_brl'      => $fmt_brl($m['valor_rs']      ?? ''),
-                'acumulado_brl'  => $fmt_brl($m['acumulado_rs']  ?? ''),
+                'valor_brl'      => $fmt_brl($m['valor_rs']      ?? $m['valor'] ?? ''),
+                'acumulado_brl'  => $fmt_brl($m['acumulado_rs']  ?? $m['acumulado'] ?? ''),
                 'percentual_txt' => $fmt_pct($m['percentual']    ?? ''),
                 'obs'            => (string)($m['observacao'] ?? $m['obs'] ?? '')
             ];
         }
     }
+
+    // Aditivos (Com suporte aos novos campos)
     if (!empty($payload['novos_aditivos']) && is_array($payload['novos_aditivos'])) {
         foreach ($payload['novos_aditivos'] as $a) {
             $aditivos_fmt[] = [
-                'numero'         => (string)($a['numero_aditivo'] ?? ''),
+                'numero'         => (string)($a['numero_aditivo'] ?? $a['numero'] ?? '—'),
                 'data_br'        => $fmt_date($a['data'] ?? ''),
                 'tipo'           => (string)($a['tipo'] ?? ''),
-                'valor_brl'      => $fmt_brl($a['valor_aditivo_total'] ?? ''),
-                'valor_total_brl'=> $fmt_brl($a['valor_total_apos_aditivo'] ?? ''),
+                'valor_brl'      => $fmt_brl($a['valor_aditivo_total'] ?? $a['valor'] ?? ''),
+                'valor_total_brl'=> $fmt_brl($a['valor_total_apos_aditivo'] ?? $a['valor_total'] ?? ''),
+                'novo_prazo'     => (string)($a['novo_prazo'] ?? $a['prazo'] ?? ''),
                 'obs'            => (string)($a['observacao'] ?? '')
             ];
         }
     }
+
+    // Reajustes
     if (!empty($payload['novos_reajustes']) && is_array($payload['novos_reajustes'])) {
         foreach ($payload['novos_reajustes'] as $rj) {
             $reajustes_fmt[] = [
                 'indice'         => (string)($rj['indice'] ?? ''),
                 'percentual_txt' => $fmt_pct($rj['percentual'] ?? ''),
                 'data_base_br'   => $fmt_date($rj['data_base'] ?? ''),
-                'valor_total_brl'=> $fmt_brl($rj['valor_total_apos_reajuste'] ?? ''),
+                'valor_total_brl'=> $fmt_brl($rj['valor_total_apos_reajuste'] ?? $rj['valor_total'] ?? ''),
                 'obs'            => (string)($rj['observacao'] ?? '')
             ];
         }
     }
 }
 
-// Se ainda não recebemos dados prontos do chamador, reconstruímos via req_id (compat)
+// Se não tem payload na sessão/memória, tenta buscar do banco pelo ID da solicitação
 if ((!$changes && !$medicoes_fmt && !$aditivos_fmt && !$reajustes_fmt) && $req_id > 0) {
     if ($st = $conn->prepare("SELECT payload_json, created_at FROM coordenador_inbox WHERE id=? LIMIT 1")) {
         $st->bind_param('i', $req_id);
@@ -176,43 +184,42 @@ if ((!$changes && !$medicoes_fmt && !$aditivos_fmt && !$reajustes_fmt) && $req_i
                 if (!$contrato_id && isset($payload['contrato_id'])) $contrato_id = (int)$payload['contrato_id'];
                 $quando_str = $quando_str ?: ( !empty($r['created_at']) ? date('d/m/Y H:i', strtotime($r['created_at'])) : date('d/m/Y H:i') );
 
-                if (!empty($payload['campos']) && is_array($payload['campos'])) {
-                    foreach ($payload['campos'] as $campo_form => $novo) {
-                        $changes[$campo_form] = [null, $novo];
-                    }
+                // Repete lógica de extração (pode ser refatorado para função, mas aqui mantemos inline para simplicidade do arquivo único)
+                if (!empty($payload['campos'])) {
+                    foreach ($payload['campos'] as $k => $v) $changes[$k] = [null, $v];
                 }
-                if (!empty($payload['novas_medicoes']) && is_array($payload['novas_medicoes'])) {
+                if (!empty($payload['novas_medicoes'])) {
                     foreach ($payload['novas_medicoes'] as $m) {
-                        $data = $m['data_medicao'] ?? $m['data'] ?? '';
                         $medicoes_fmt[] = [
-                            'data_br'        => $fmt_date($data),
-                            'valor_brl'      => $fmt_brl($m['valor_rs']      ?? ''),
-                            'acumulado_brl'  => $fmt_brl($m['acumulado_rs']  ?? ''),
-                            'percentual_txt' => $fmt_pct($m['percentual']    ?? ''),
-                            'obs'            => (string)($m['observacao'] ?? $m['obs'] ?? '')
+                            'data_br' => $fmt_date($m['data_medicao']??$m['data']??''),
+                            'valor_brl' => $fmt_brl($m['valor_rs']??''),
+                            'acumulado_brl' => $fmt_brl($m['acumulado_rs']??''),
+                            'percentual_txt' => $fmt_pct($m['percentual']??''),
+                            'obs' => $m['observacao']??''
                         ];
                     }
                 }
-                if (!empty($payload['novos_aditivos']) && is_array($payload['novos_aditivos'])) {
+                if (!empty($payload['novos_aditivos'])) {
                     foreach ($payload['novos_aditivos'] as $a) {
                         $aditivos_fmt[] = [
-                            'numero'         => (string)($a['numero_aditivo'] ?? ''),
-                            'data_br'        => $fmt_date($a['data'] ?? ''),
-                            'tipo'           => (string)($a['tipo'] ?? ''),
-                            'valor_brl'      => $fmt_brl($a['valor_aditivo_total'] ?? ''),
-                            'valor_total_brl'=> $fmt_brl($a['valor_total_apos_aditivo'] ?? ''),
-                            'obs'            => (string)($a['observacao'] ?? '')
+                            'numero' => $a['numero_aditivo']??'—',
+                            'data_br' => $fmt_date($a['data']??''),
+                            'tipo' => $a['tipo']??'',
+                            'valor_brl' => $fmt_brl($a['valor_aditivo_total']??''),
+                            'valor_total_brl' => $fmt_brl($a['valor_total_apos_aditivo']??''),
+                            'novo_prazo' => $a['novo_prazo']??'',
+                            'obs' => $a['observacao']??''
                         ];
                     }
                 }
-                if (!empty($payload['novos_reajustes']) && is_array($payload['novos_reajustes'])) {
+                if (!empty($payload['novos_reajustes'])) {
                     foreach ($payload['novos_reajustes'] as $rj) {
                         $reajustes_fmt[] = [
-                            'indice'         => (string)($rj['indice'] ?? ''),
-                            'percentual_txt' => $fmt_pct($rj['percentual'] ?? ''),
-                            'data_base_br'   => $fmt_date($rj['data_base'] ?? ''),
-                            'valor_total_brl'=> $fmt_brl($rj['valor_total_apos_reajuste'] ?? ''),
-                            'obs'            => (string)($rj['observacao'] ?? '')
+                            'indice' => $rj['indice']??'',
+                            'percentual_txt' => $fmt_pct($rj['percentual']??''),
+                            'data_base_br' => $fmt_date($rj['data_base']??''),
+                            'valor_total_brl' => $fmt_brl($rj['valor_total_apos_reajuste']??''),
+                            'obs' => $rj['observacao']??''
                         ];
                     }
                 }
@@ -222,20 +229,20 @@ if ((!$changes && !$medicoes_fmt && !$aditivos_fmt && !$reajustes_fmt) && $req_i
     }
 }
 
-// Valores padrão
+// Valores padrão para exibição
 $contrato_id = $contrato_id ?: ($_GET['contrato_id'] ?? '');
 $quando_str  = $quando_str  ?: date('d/m/Y H:i');
 
-// ---------- Partials ----------
+// Carrega Partials de Layout se ainda não carregados
 if (!defined('COH_PARTIALS_LOADED')) {
     define('COH_PARTIALS_LOADED', true);
     require_once __DIR__ . '/../partials/header.php';
     require_once __DIR__ . '/../partials/topbar.php';
-    include __DIR__ . '/lgpd_guard.php';
+    include __DIR__ . '/lgpd_guard.php'; // Se existir
 }
 ?>
 <style>
-/* Visual clean, fundo branco */
+/* CSS Específico da Página de Sucesso */
 .sux-wrap{ max-width: 1100px; margin: 12px auto 32px; }
 .sux-card{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 6px 22px rgba(2,6,23,.06); }
 .sux-head{ display:flex; align-items:center; gap:12px; padding:14px 16px; border-bottom:1px dashed #e5e7eb; }
@@ -254,27 +261,29 @@ if (!defined('COH_PARTIALS_LOADED')) {
     <div class="sux-card mb-4">
       <div class="sux-body">
         <div class="d-flex align-items-center gap-3 mb-2">
-          <span class="badge text-bg-success badge-pill">Sucesso</span>
+          <span class="badge text-bg-success badge-pill"><i class="bi bi-check-lg"></i> Sucesso</span>
           <div>
-            <div class="fs-5 fw-bold">Solicitação enviada ao Coordenador.</div>
+            <div class="fs-5 fw-bold">Solicitação enviada ao Coordenador</div>
             <div class="small text-secondary">
-              Protocolo: <?= $contrato_id ? 'contrato #'.e($contrato_id) : '—' ?> • <?= e($quando_str) ?>
+              Contrato: <strong>#<?= e($contrato_id) ?></strong> • Enviado em: <?= e($quando_str) ?>
             </div>
           </div>
         </div>
+        <p class="mb-0 text-muted small mt-2">
+            Suas alterações foram registradas e aguardam aprovação. Você será notificado assim que o processo for concluído.
+        </p>
       </div>
     </div>
 
-    <!-- Alterações de campos -->
+    <?php if (!empty($changes)): ?>
     <div class="sux-card mb-4">
       <div class="sux-head">
         <span class="sux-dot"></span>
-        <div class="sux-title">Alterações solicitadas</div>
+        <div class="sux-title">Dados Cadastrais Alterados</div>
       </div>
       <div class="sux-body">
-        <?php if (!empty($changes)): ?>
           <div class="table-responsive">
-            <table class="table table-sm table-clean align-middle">
+            <table class="table table-sm table-clean align-middle mb-0">
               <thead>
                 <tr>
                   <th>Campo</th>
@@ -289,35 +298,33 @@ if (!defined('COH_PARTIALS_LOADED')) {
                     $depois = $val[1];
               ?>
                 <tr>
-                  <td class="fw-semibold"><?= e($rotulo) ?></td>
-                  <td><?= ($antes === null || $antes === '') ? '—' : e($antes) ?></td>
-                  <td><?= ($depois === null || $depois === '') ? '—' : e($depois) ?></td>
+                  <td class="fw-semibold text-primary"><?= e($rotulo) ?></td>
+                  <td class="text-muted small"><?= ($antes === null || $antes === '') ? '—' : e($antes) ?></td>
+                  <td class="fw-bold"><?= ($depois === null || $depois === '') ? '—' : e($depois) ?></td>
                 </tr>
               <?php endforeach; ?>
               </tbody>
             </table>
           </div>
-        <?php else: ?>
-          <div class="text-muted">Nenhuma alteração de campo foi identificada.</div>
-        <?php endif; ?>
       </div>
     </div>
+    <?php endif; ?>
 
     <?php if (!empty($medicoes_fmt)): ?>
     <div class="sux-card mb-4">
       <div class="sux-head">
-        <span class="sux-dot"></span>
-        <div class="sux-title">Medições incluídas</div>
+        <span class="sux-dot" style="background:#10b981; box-shadow:0 0 0 3px rgba(16,185,129,.15);"></span>
+        <div class="sux-title">Novas Medições</div>
       </div>
       <div class="sux-body">
         <div class="table-responsive">
-          <table class="table table-sm table-clean align-middle">
+          <table class="table table-sm table-clean align-middle mb-0">
             <thead>
               <tr>
-                <th style="width:60px">#</th>
+                <th style="width:40px">#</th>
                 <th>Data</th>
-                <th>Valor (R$)</th>
-                <th>Acumulado (R$)</th>
+                <th>Valor</th>
+                <th>Acumulado</th>
                 <th>%</th>
                 <th>Obs</th>
               </tr>
@@ -326,11 +333,11 @@ if (!defined('COH_PARTIALS_LOADED')) {
               <?php $i=0; foreach ($medicoes_fmt as $m): $i++; ?>
                 <tr>
                   <td><?= $i ?></td>
-                  <td><?= e($m['data_br'] ?? '') ?></td>
-                  <td><?= e($m['valor_brl'] ?? '') ?></td>
-                  <td><?= e($m['acumulado_brl'] ?? '') ?></td>
-                  <td><?= e($m['percentual_txt'] ?? '') ?></td>
-                  <td><?= e($m['obs'] ?? '') ?></td>
+                  <td><?= e($m['data_br']) ?></td>
+                  <td><?= e($m['valor_brl']) ?></td>
+                  <td><?= e($m['acumulado_brl']) ?></td>
+                  <td><?= e($m['percentual_txt']) ?></td>
+                  <td class="small text-muted"><?= e($m['obs']) ?></td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
@@ -343,20 +350,20 @@ if (!defined('COH_PARTIALS_LOADED')) {
     <?php if (!empty($aditivos_fmt)): ?>
     <div class="sux-card mb-4">
       <div class="sux-head">
-        <span class="sux-dot"></span>
-        <div class="sux-title">Aditivos incluídos</div>
+        <span class="sux-dot" style="background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.15);"></span>
+        <div class="sux-title">Novos Aditivos</div>
       </div>
       <div class="sux-body">
         <div class="table-responsive">
-          <table class="table table-sm table-clean align-middle">
+          <table class="table table-sm table-clean align-middle mb-0">
             <thead>
               <tr>
-                <th style="width:60px">#</th>
-                <th>Nº</th>
+                <th style="width:40px">#</th>
+                <th>Nº / Tipo</th>
                 <th>Data</th>
-                <th>Tipo</th>
-                <th>Valor do Aditivo</th>
-                <th>Valor Total Após Aditivo</th>
+                <th>Valor Aditivo</th>
+                <th>Valor Total</th>
+                <th>Novo Prazo</th>
                 <th>Obs</th>
               </tr>
             </thead>
@@ -364,12 +371,17 @@ if (!defined('COH_PARTIALS_LOADED')) {
               <?php $i=0; foreach ($aditivos_fmt as $a): $i++; ?>
                 <tr>
                   <td><?= $i ?></td>
-                  <td><?= e($a['numero'] ?? '') ?></td>
-                  <td><?= e($a['data_br'] ?? '') ?></td>
-                  <td><?= e($a['tipo'] ?? '') ?></td>
-                  <td><?= e($a['valor_brl'] ?? '') ?></td>
-                  <td><?= e($a['valor_total_brl'] ?? '') ?></td>
-                  <td><?= e($a['obs'] ?? '') ?></td>
+                  <td>
+                      <strong><?= e($a['numero']) ?></strong><br>
+                      <small class="text-secondary"><?= e($a['tipo']) ?></small>
+                  </td>
+                  <td><?= e($a['data_br']) ?></td>
+                  <td class="text-primary fw-bold"><?= e($a['valor_brl']) ?></td>
+                  <td><?= e($a['valor_total_brl']) ?></td>
+                  <td><?= e($a['novo_prazo']) ?></td>
+                  <td class="small text-muted" style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="<?= e($a['obs']) ?>">
+                      <?= e($a['obs']) ?>
+                  </td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
@@ -382,19 +394,19 @@ if (!defined('COH_PARTIALS_LOADED')) {
     <?php if (!empty($reajustes_fmt)): ?>
     <div class="sux-card mb-4">
       <div class="sux-head">
-        <span class="sux-dot"></span>
-        <div class="sux-title">Reajustes incluídos</div>
+        <span class="sux-dot" style="background:#8b5cf6; box-shadow:0 0 0 3px rgba(139,92,246,.15);"></span>
+        <div class="sux-title">Novos Reajustes</div>
       </div>
       <div class="sux-body">
         <div class="table-responsive">
-          <table class="table table-sm table-clean align-middle">
+          <table class="table table-sm table-clean align-middle mb-0">
             <thead>
               <tr>
-                <th style="width:60px">#</th>
+                <th style="width:40px">#</th>
                 <th>Índice</th>
-                <th>%</th>
-                <th>Data-base</th>
-                <th>Valor Total Após Reajuste</th>
+                <th>Percentual</th>
+                <th>Data Base</th>
+                <th>Valor Total</th>
                 <th>Obs</th>
               </tr>
             </thead>
@@ -402,11 +414,11 @@ if (!defined('COH_PARTIALS_LOADED')) {
               <?php $i=0; foreach ($reajustes_fmt as $rj): $i++; ?>
                 <tr>
                   <td><?= $i ?></td>
-                  <td><?= e($rj['indice'] ?? '') ?></td>
-                  <td><?= e($rj['percentual_txt'] ?? '') ?></td>
-                  <td><?= e($rj['data_base_br'] ?? '') ?></td>
-                  <td><?= e($rj['valor_total_brl'] ?? '') ?></td>
-                  <td><?= e($rj['obs'] ?? '') ?></td>
+                  <td><?= e($rj['indice']) ?></td>
+                  <td><?= e($rj['percentual_txt']) ?></td>
+                  <td><?= e($rj['data_base_br']) ?></td>
+                  <td><?= e($rj['valor_total_brl']) ?></td>
+                  <td class="small text-muted"><?= e($rj['obs']) ?></td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
@@ -416,13 +428,22 @@ if (!defined('COH_PARTIALS_LOADED')) {
     </div>
     <?php endif; ?>
 
+    <?php if(empty($changes) && empty($medicoes_fmt) && empty($aditivos_fmt) && empty($reajustes_fmt)): ?>
+        <div class="alert alert-warning text-center">
+            Nenhuma alteração detalhada foi encontrada neste protocolo.
+        </div>
+    <?php endif; ?>
+
     <?php
-      // Link de retorno: sempre para a página de BUSCA
-      $back = '/form_contratos.php';
+      // Link de retorno ao contrato específico
+      $back_contrato = ($contrato_id > 0) ? "/form_contratos.php?id={$contrato_id}" : '/form_contratos.php';
     ?>
-    <div class="text-center mb-4">
-      <a href="<?= e($back) ?>" class="btn btn-outline-primary btn-soft">
-        <i class="bi bi-house-door"></i> Voltar à busca
+    <div class="text-center mb-4 d-print-none">
+      <a href="<?= e($back_contrato) ?>" class="btn btn-primary btn-soft px-4">
+        <i class="bi bi-arrow-left"></i> Voltar para o Contrato
+      </a>
+      <a href="/form_contratos.php" class="btn btn-outline-secondary btn-soft ms-2">
+        <i class="bi bi-search"></i> Voltar à Busca
       </a>
     </div>
 
@@ -432,3 +453,10 @@ if (!defined('COH_PARTIALS_LOADED')) {
     <?php require_once __DIR__ . '/../partials/footer.php'; ?>
   </div>
 </div>
+
+<?php
+// Limpa a sessão para que, ao atualizar a página, não reapareça a mensagem de sucesso repetida
+if (isset($_SESSION['APROV_PAYLOAD'])) {
+    unset($_SESSION['APROV_PAYLOAD']);
+}
+?>

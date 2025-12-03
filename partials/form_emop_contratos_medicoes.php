@@ -38,68 +38,16 @@ if (!empty($__medicoes_salvas)) {
 }
 
 // Campos hidden e Scripts de rascunho (compartilhados com Aditivos/Reajustes)
+// Os inputs são criados aqui uma única vez.
 if (!defined('COH_DRAFT_INPUTS')) {
   define('COH_DRAFT_INPUTS', true);
   echo '<input type="hidden" name="novas_medicoes_json"   id="novas_medicoes_json"   value="">' . PHP_EOL;
   echo '<input type="hidden" name="novos_aditivos_json"   id="novos_aditivos_json"   value="">' . PHP_EOL;
   echo '<input type="hidden" name="novos_reajustes_json"  id="novos_reajustes_json"  value="">' . PHP_EOL;
 }
-if (!defined('COH_DRAFT_JS')) {
-  define('COH_DRAFT_JS', true); ?>
-<script>
-window.COH = window.COH || {};
-COH.draft = COH.draft || { medicoes: [], aditivos: [], reajustes: [] };
 
-function cohSetHiddenDraft(){
-  let m=document.getElementById('novas_medicoes_json'),
-      a=document.getElementById('novos_aditivos_json'),
-      r=document.getElementById('novos_reajustes_json');
-  if(m)m.value=JSON.stringify(COH.draft.medicoes);
-  if(a)a.value=JSON.stringify(COH.draft.aditivos);
-  if(r)r.value=JSON.stringify(COH.draft.reajustes);
-}
-function cohRenderDraft(listId, arr){
-  let ul=document.getElementById(listId); if(!ul) return;
-  ul.innerHTML='';
-  arr.forEach((item, idx)=>{
-    let li=document.createElement('li');
-    li.className='d-flex align-items-start justify-content-between border rounded px-2 py-1 mb-1';
-    li.innerHTML =
-      '<div><strong>'+(item._label||'Item')+'</strong>' +
-      '<div class="small text-secondary">'+(item._desc||'')+'</div></div>' +
-      '<button type="button" class="btn btn-sm btn-outline-danger ms-2" data-remove="'+idx+'">Excluir</button>';
-    li.querySelector('button[data-remove]').addEventListener('click', ev=>{
-      ev.preventDefault(); ev.stopPropagation();
-      arr.splice(idx,1);
-      cohSetHiddenDraft();
-      cohRenderDraft(listId, arr);
-    });
-    ul.appendChild(li);
-  });
-}
-window.cohAddMedicao=function(p){
-  let l='Medição '+(p.data_medicao||'');
-  let d='Valor: '+(p.valor_rs||'');
-  COH.draft.medicoes.push(Object.assign({_label:l,_desc:d}, p));
-  cohSetHiddenDraft();
-  cohRenderDraft('draft-list-medicoes', COH.draft.medicoes);
-};
-window.cohAddAditivo=function(p){
-  let l='Aditivo '+(p.numero_aditivo||'');
-  let d='Valor: '+(p.valor_aditivo_total||'');
-  COH.draft.aditivos.push(Object.assign({_label:l,_desc:d}, p));
-  cohSetHiddenDraft();
-  cohRenderDraft('draft-list-aditivos', COH.draft.aditivos);
-};
-window.cohAddReajuste=function(p){
-  let l='Reajuste '+(p.indice||p.data_base||'');
-  let d='Perc: '+(p.percentual||'');
-  COH.draft.reajustes.push(Object.assign({_label:l,_desc:d}, p));
-  cohSetHiddenDraft();
-  cohRenderDraft('draft-list-reajustes', COH.draft.reajustes);
-};
-</script>
-<?php } ?>
+// (O JS base de COH.draft/cohRenderDraft veio do arquivo de Aditivos)
+?>
 
 <ul id="draft-list-medicoes" class="list-unstyled mb-3"></ul>
 <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalMedicao">
@@ -125,10 +73,10 @@ window.cohAddReajuste=function(p){
           <?php $running=0.0; ?>
           <?php foreach ($__medicoes_salvas as $m): ?>
             <?php
-              $valor = (float)($m['valor_rs'] ?? 0);
+              $valor   = (float)($m['valor_rs'] ?? 0);
               $liq_ant = $running;
               $running += $valor;
-              $acum = $running;
+              $acum    = $running;
               $pct_line = $__valor_total_contrato > 0 ? (($acum / $__valor_total_contrato) * 100.0) : null;
 
               // Regra 24h + created_by (helper vindo da lib)
@@ -180,7 +128,7 @@ window.cohAddReajuste=function(p){
   <?php endif; ?>
 </div>
 
-<div class="modal fade" id="modalMedicao" tabindex="-1">
+<div class="modal fade" id="modalMedicao" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
@@ -190,78 +138,147 @@ window.cohAddReajuste=function(p){
       <div class="modal-body">
         <div class="row g-3">
           <div class="col-md-4">
-            <label>Data</label>
+            <label class="form-label">Data</label>
             <input type="date" name="data_medicao" class="form-control">
           </div>
           <div class="col-md-4">
-            <label>Liquidado anterior (R$)</label>
+            <label class="form-label">Liquidado anterior (R$)</label>
             <input type="text" class="form-control" id="med_liq_ant_view"
                    value="<?= brl($__liquidado_anterior) ?>" readonly>
           </div>
           <div class="col-md-4">
-            <label>Valor da medição (R$)</label>
+            <label class="form-label">Valor da medição (R$)</label>
             <input type="text" name="valor_rs" class="form-control" id="med_valor_rs" placeholder="0,00">
           </div>
           <div class="col-md-12">
-            <label>Liquidado acumulado (R$)</label>
+            <label class="form-label">Liquidado acumulado (R$)</label>
             <input type="text" name="acumulado_rs" class="form-control" id="med_acumulado_rs" readonly>
           </div>
           <div class="col-md-12">
-            <label>% Liquidado</label>
+            <label class="form-label">% Liquidado</label>
             <input type="text" name="percentual" class="form-control" id="med_percentual" readonly>
           </div>
           <div class="col-12">
-            <label>Observação</label>
+            <label class="form-label">Observação</label>
             <textarea name="observacao" class="form-control" rows="2"></textarea>
           </div>
         </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-        <button type="button" class="btn btn-primary" onclick="(function(){
-          var root=document.getElementById('modalMedicao');
-          var p={
-            data_medicao: root.querySelector('input[name=data_medicao]').value,
-            valor_rs:      root.querySelector('input[name=valor_rs]').value,
-            acumulado_rs:  root.querySelector('input[name=acumulado_rs]').value,
-            percentual:    root.querySelector('input[name=percentual]').value,
-            observacao:    root.querySelector('textarea[name=observacao]').value
-          };
-          if(window.cohAddMedicao) window.cohAddMedicao(p);
-          root.querySelectorAll('input,textarea').forEach(el=>el.value='');
-          bootstrap.Modal.getInstance(root).hide();
-        })()">Salvar no Rascunho</button>
+        <button type="button" class="btn btn-primary" onclick="salvarMedicaoNoDraft()">Salvar no Rascunho</button>
       </div>
     </div>
   </div>
 </div>
 
 <script>
+function salvarMedicaoNoDraft() {
+    var root = document.getElementById('modalMedicao');
+    if (!root) return;
+
+    var p = {
+        data_medicao: root.querySelector('input[name="data_medicao"]')?.value || '',
+        valor_rs:      root.querySelector('input[name="valor_rs"]')?.value || '',
+        acumulado_rs:  root.querySelector('input[name="acumulado_rs"]')?.value || '',
+        percentual:    root.querySelector('input[name="percentual"]')?.value || '',
+        observacao:    root.querySelector('textarea[name="observacao"]')?.value || ''
+    };
+
+    // Validação simples
+    if (!p.data_medicao && !p.valor_rs && !p.observacao) {
+        alert('Preencha ao menos data, valor ou observação.');
+        return;
+    }
+
+    // 1) Adiciona ao draft visual
+    if (window.cohAddMedicao) {
+        window.cohAddMedicao(p);
+    }
+
+    // 2) Atualiza hidden "novas_medicoes_json" imediatamente
+    try {
+        var form = document.querySelector('form[data-form="emop-contrato"]') || document.getElementById('coh-form');
+        if (form) {
+            var inp = form.querySelector('input[name="novas_medicoes_json"]');
+            if (!inp) {
+                inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = 'novas_medicoes_json';
+                inp.id   = 'novas_medicoes_json';
+                form.appendChild(inp);
+            }
+            var arr = [];
+            if (inp.value && inp.value.trim() !== '' && inp.value.trim() !== '[]') {
+                try { arr = JSON.parse(inp.value); } catch(e){ arr = []; }
+            }
+            arr.push(p);
+            inp.value = JSON.stringify(arr);
+        }
+    } catch(e){
+        console.error('Erro ao atualizar novas_medicoes_json:', e);
+    }
+
+    // 3) Sincroniza global (extra)
+    if (window.cohForceSync) window.cohForceSync();
+
+    // 4) Limpa campos (mantém o "liquidado anterior" exibido)
+    root.querySelectorAll('input[name="data_medicao"], input[name="valor_rs"], input[name="acumulado_rs"], input[name="percentual"], textarea[name="observacao"]').forEach(function(el){
+        el.value = '';
+    });
+
+    // 5) Fecha modal
+    var m = bootstrap.Modal.getInstance(root);
+    if (m) m.hide();
+}
+
 (function(){
   const LIQ_ANT = <?= json_encode($__liquidado_anterior) ?>;
   const VLR_TOT = <?= json_encode($__valor_total_contrato) ?>;
 
   function brlToFloat(str){
     if(!str) return 0;
-    return parseFloat(str.replace(/\./g,'').replace(',', '.')) || 0;
+    str = String(str).trim();
+    str = str.replace(/\./g,'').replace(',', '.');
+    var n = parseFloat(str);
+    return isNaN(n) ? 0 : n;
   }
   function fmtBRL(n){
-    return (n||0).toFixed(2).replace('.',',').replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+    try {
+      return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+    } catch(e){
+      var s = (Math.round(n*100)/100).toFixed(2);
+      return s.replace('.',',').replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+    }
   }
   function fmtPCT(n){
-    return (n||0).toFixed(2).replace('.',',');
+    var s = (Math.round(n*100)/100).toFixed(2);
+    return s.replace('.',',');
   }
+
   function recalc(){
-    let v = brlToFloat(document.getElementById('med_valor_rs').value);
-    let ac = (LIQ_ANT || 0) + v;
-    let pc = VLR_TOT > 0 ? (ac / VLR_TOT) * 100 : 0;
-    document.getElementById('med_acumulado_rs').value = fmtBRL(ac);
-    document.getElementById('med_percentual').value  = fmtPCT(pc);
+    var inpVal = document.getElementById('med_valor_rs');
+    var inpAc  = document.getElementById('med_acumulado_rs');
+    var inpPc  = document.getElementById('med_percentual');
+    if(!inpVal || !inpAc || !inpPc) return;
+
+    var v = brlToFloat(inpVal.value);
+    var ac = (LIQ_ANT || 0) + v;
+    var pc = VLR_TOT > 0 ? (ac / VLR_TOT) * 100 : 0;
+
+    inpAc.value = fmtBRL(ac);
+    inpPc.value = fmtPCT(pc);
   }
-  document.addEventListener('input', ev=>{
-    if(ev.target.id === 'med_valor_rs') recalc();
+
+  document.addEventListener('input', function(ev){
+    if (ev.target && ev.target.id === 'med_valor_rs') recalc();
   });
-  document.getElementById('modalMedicao')
-    ?.addEventListener('shown.bs.modal', ()=>setTimeout(recalc,130));
+
+  var modal = document.getElementById('modalMedicao');
+  if (modal) {
+    modal.addEventListener('shown.bs.modal', function(){
+      setTimeout(recalc, 130);
+    });
+  }
 })();
 </script>
