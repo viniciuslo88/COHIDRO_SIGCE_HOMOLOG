@@ -8,15 +8,27 @@
    - Colapso da sidebar via .sidebar-collapsed (um único botão dentro dela)
    ========================================================================== */
 
-/* Sidebar – deixa o flex esticar até o final do layout */
+/* Sidebar – comportamento fixo/sticky */
 .coh-sidebar {
-  position: relative;
-  /* height: 100vh; */
-  /* min-height: 100vh; */
+  /* Impede que o flex force a sidebar a ter o tamanho do conteúdo principal */
+  align-self: flex-start;
 
+  position: -webkit-sticky;
+  position: sticky;
+  
+  /* Cola no topo. Se tiver barra fixa no topo, use ex: top: 60px; */
+  top: 0;
+  
+  /* MUDANÇA: Altura da viewport MENOS o tamanho do footer (aprox 60px) 
+     Isso evita que a barra de rolagem interna vá até o fundo absoluto da página */
+  height: calc(100vh - 60px);
+
+  /* Habilita a rolagem interna no menu */
+  overflow-y: auto; 
+  
   display: flex;
   flex-direction: column;
-  justify-content: flex-start; /* tudo começa no topo */
+  justify-content: flex-start;
 
   background: linear-gradient(
     to bottom,
@@ -25,8 +37,12 @@
     #00b894 100%
   ) !important;
   color: #fff !important;
+  
+  z-index: 1000;
+  
+  /* Espaço interno extra no final para o último item não ficar "colado" */
+  padding-bottom: 20px !important;
 }
-
 
 /* Estrutura principal da página também deve ocupar 100% */
 html, body {
@@ -245,11 +261,14 @@ html.sidebar-collapsed .coh-sidebar .coh-sidebar-header {
 /* Sidebar + conteúdo andam juntos com o scroll da página */
 .coh-app-main {
   flex: 1 1 auto;
-  display: flex;          /* já está no inline do header, reforçando */
-  align-items: stretch;
+  display: flex;
+  align-items: stretch; /* Pode manter stretch aqui */
   width: 100%;
-  overflow-y: visible !important;    /* quem rola é o body agora (override do .overflow-auto do Bootstrap) */
-  overflow-x: hidden;
+  
+  /* MUDANÇA CRUCIAL: 'visible' ou 'clip' permite que o sticky funcione. 
+     'hidden' mata o sticky. */
+  overflow: visible !important; 
+  /* ou overflow-x: clip; se seu navegador suportar, mas visible é mais seguro para sticky */
 }
 
 /* Conteúdo principal só usa o flex, sem scroll próprio */

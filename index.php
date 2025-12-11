@@ -208,16 +208,22 @@ function build_where(mysqli $conn, array $filters, string $yearExpr, array $extr
     return $conds ? (" WHERE ".implode(" AND ", $conds)) : "";
 }
 
-/** DISTINCT simples */
+/** * DISTINCT simples corrigido: 
+ * - Usa array completo de filtros (para dependência correta)
+ * - Evita filtrar por si mesmo (resolve o problema de sumir opções)
+ */
 function distinct_options(mysqli $conn, string $field, array $filters, string $yearExpr, array $scope = [], array $post = []) : array {
     global $__SCOPE_SQL;
 
+    // Se $scope estiver vazio, não filtra nada. Se tiver itens, filtra apenas pelo que está no escopo.
+    $shouldFilter = fn($key) => !empty($scope) && in_array($key, $scope);
+
     $f = [
-        'diretoria' => $scope ? ($filters['diretoria'] ?? '') : '',
-        'secretaria'=> $scope ? ($filters['secretaria'] ?? '') : '',
-        'municipio' => $scope ? ($filters['municipio'] ?? '') : '',
-        'ano'       => $scope ? ($filters['ano'] ?? '') : '',
-        'status'    => $filters['status'] ?? [],
+        'diretoria' => $shouldFilter('diretoria')  ? ($filters['diretoria'] ?? '') : '',
+        'secretaria'=> $shouldFilter('secretaria') ? ($filters['secretaria'] ?? '') : '',
+        'municipio' => $shouldFilter('municipio')  ? ($filters['municipio'] ?? '') : '',
+        'ano'       => $shouldFilter('ano')        ? ($filters['ano'] ?? '') : '',
+        'status'    => $shouldFilter('status')     ? ($filters['status'] ?? []) : [],
     ];
     $where = build_where($conn, $f, $yearExpr, $post);
 
@@ -233,16 +239,18 @@ function distinct_options(mysqli $conn, string $field, array $filters, string $y
     return $out;
 }
 
-/** DISTINCT especial para Município (decompõe listas) */
+/** DISTINCT especial para Município corrigido */
 function distinct_municipios(mysqli $conn, array $filters, string $yearExpr, array $scope = [], array $post = []) : array {
     global $__SCOPE_SQL;
 
+    $shouldFilter = fn($key) => !empty($scope) && in_array($key, $scope);
+
     $f = [
-        'diretoria' => $scope ? ($filters['diretoria'] ?? '') : '',
-        'secretaria'=> $scope ? ($filters['secretaria'] ?? '') : '',
-        'municipio' => '',
-        'ano'       => $scope ? ($filters['ano'] ?? '') : '',
-        'status'    => $filters['status'] ?? [],
+        'diretoria' => $shouldFilter('diretoria')  ? ($filters['diretoria'] ?? '') : '',
+        'secretaria'=> $shouldFilter('secretaria') ? ($filters['secretaria'] ?? '') : '',
+        'municipio' => '', // Nunca filtra município ao gerar lista de municípios
+        'ano'       => $shouldFilter('ano')        ? ($filters['ano'] ?? '') : '',
+        'status'    => $shouldFilter('status')     ? ($filters['status'] ?? []) : [],
     ];
     $where = build_where($conn, $f, $yearExpr, $post);
     if ($where === '') { $where = " WHERE 1=1 $__SCOPE_SQL"; }
@@ -274,28 +282,28 @@ $F_sec_arr    = coh_to_array($_GET['secretaria'] ?? []);
 $F_mun_arr    = coh_to_array($_GET['municipio']  ?? []);
 $F_ano_arr    = coh_to_array($_GET['ano']        ?? []);
 
-// Status: se não veio no GET => padrão EM VIGOR; se veio (mesmo vazio) => respeita o que veio.
+// Status
 if (array_key_exists('status', $_GET)) {
     $F_status_arr = coh_to_array($_GET['status']);
 } else {
     $F_status_arr = ['EM VIGOR'];
 }
 
-// Versões single para conveniência (primeiro selecionado)
+// Versões single (mantidas para compatibilidade e evitar erro de variável indefinida)
 $F_dir_first    = $F_dir_arr[0]    ?? '';
 $F_sec_first    = $F_sec_arr[0]    ?? '';
 $F_mun_first    = $F_mun_arr[0]    ?? '';
 $F_ano_first    = $F_ano_arr[0]    ?? '';
 $F_status_first = $F_status_arr[0] ?? 'EM VIGOR';
 
-// Compat em alguns pontos
+// Compatibilidade
 $F_dir    = $F_dir_first;
 $F_sec    = $F_sec_first;
 $F_mun    = $F_mun_first;
 $F_ano    = $F_ano_first;
 $F_status = $F_status_first;
 
-// Filtros efetivos (arrays) — usados no WHERE
+// Filtros Array (O PRINCIPAL para o WHERE)
 $filters = [
     'diretoria' => $F_dir_arr,
     'secretaria'=> $F_sec_arr,
@@ -304,13 +312,13 @@ $filters = [
     'status'    => $F_status_arr,
 ];
 
-// Versão "single" p/ montar listas de opções
+// Filtros Single (Apenas para evitar Warning se usado em views antigas, mas NÃO usado na lógica de distinct)
 $filters_single = [
     'diretoria' => $F_dir_first,
     'secretaria'=> $F_sec_first,
     'municipio' => $F_mun_first,
     'ano'       => $F_ano_first,
-    'status'    => $F_status_arr,
+    'status'    => $F_status_arr, // Status sempre array no nosso logic
 ];
 
 // Expressão de ano
@@ -322,6 +330,46 @@ if ($WHERE === '') {
     $WHERE = " WHERE 1=1 $__SCOPE_SQL";
 } else {
     $WHERE .= " $__SCOPE_SQL";
+}
+
+// ==== Opções para selects ====
+// CORREÇÃO: Passamos $filters (array), e não $filters_single.
+// O array $scope define quais filtros DEVEM afetar esta lista.
+// Ex: A lista de Diretorias deve ser filtrada por Secretaria, Municipio e Ano, mas NÃO por Diretoria (para não esconder as outras opções).
+
+$opts_diretoria  = distinct_options($conn, 'Diretoria',  $filters, $yearExpr, ['secretaria','municipio','ano']);
+$opts_secretaria = distinct_options($conn, 'Secretaria', $filters, $yearExpr, ['diretoria','municipio','ano']);
+
+$opts_ano        = (function() use ($conn, $filters, $yearExpr, $__SCOPE_SQL){
+    // Para Ano, queremos que respeite todos os filtros, exceto o próprio Ano
+    $f = [
+        'diretoria' => $filters['diretoria'] ?? [],
+        'secretaria'=> $filters['secretaria'] ?? [],
+        'municipio' => $filters['municipio'] ?? [],
+        'ano'       => [], // Vazio para listar todos os anos disponíveis dentro dos outros filtros
+        'status'    => $filters['status'] ?? [],
+    ];
+    $where = build_where($conn, $f, $yearExpr, ["$yearExpr >= 2021"]);
+    if ($where === '') { $where = " WHERE 1=1 $__SCOPE_SQL"; }
+    else { $where .= " $__SCOPE_SQL"; }
+    
+    $sql = "SELECT DISTINCT $yearExpr AS ano FROM emop_contratos $where ORDER BY ano DESC";
+    $out = [];
+    if ($r = $conn->query($sql)) while($row = $r->fetch_assoc()) if(!empty($row['ano'])) $out[] = (string)$row['ano'];
+    return $out;
+})();
+
+$opts_municipio  = distinct_municipios($conn, $filters, $yearExpr, ['diretoria','secretaria','ano']);
+
+// Opções de Status
+$opts_status = [];
+$sqlStatus = "SELECT DISTINCT TRIM(COALESCE(`Status`,'')) AS v
+              FROM emop_contratos
+              WHERE 1=1 $__SCOPE_SQL
+              HAVING v <> ''
+              ORDER BY v";
+if ($r = $conn->query($sqlStatus)) {
+    while ($row = $r->fetch_assoc()) $opts_status[] = $row['v'];
 }
 
 // ==== Opções para selects ====
