@@ -198,6 +198,50 @@ function ensure_coordenador_inbox_schema(mysqli $conn): void {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
 
+// ===== Auditoria de alterações de contrato =====
+function ensure_contratos_log_schema(mysqli $conn): void {
+  $conn->query("CREATE TABLE IF NOT EXISTS emop_contratos_log (
+    id INT NOT NULL AUTO_INCREMENT,
+    contrato_id INT NOT NULL,
+    usuario_id INT NULL,
+    usuario_nome VARCHAR(150) NULL,
+    diretoria VARCHAR(100) NULL,
+    acao VARCHAR(50) NULL,
+    detalhes TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_contrato (contrato_id),
+    KEY idx_created_at (created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function coh_log_contrato_change(mysqli $conn, int $contrato_id, string $acao, string $detalhes = ''): void {
+  if ($contrato_id <= 0) return;
+  ensure_contratos_log_schema($conn);
+
+  if (session_status() === PHP_SESSION_NONE) @session_start();
+  $uid  = (int)($_SESSION['user_id'] ?? 0);
+  $dir  = (string)($_SESSION['diretoria'] ?? '');
+  if ($dir === 'DIRIM') $dir = 'DIRM';
+
+  $nome = '';
+  if (!empty($_SESSION['nome'])) {
+      $nome = (string)$_SESSION['nome'];
+  } else {
+      // fallback para o array global de usuário carregado no topo
+      global $_USER;
+      if (!empty($_USER['nome'])) {
+          $nome = (string)$_USER['nome'];
+      }
+  }
+
+  if ($st = $conn->prepare("INSERT INTO emop_contratos_log (contrato_id,usuario_id,usuario_nome,diretoria,acao,detalhes) VALUES (?,?,?,?,?,?)")) {
+    $st->bind_param('iissss', $contrato_id, $uid, $nome, $dir, $acao, $detalhes);
+    $st->execute();
+    $st->close();
+  }
+}
+
 // =====================================================
 // POST — Salvar Direto (Nível 5) e Workflow (Nível 1)
 // =====================================================
@@ -321,6 +365,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              $conn->query("UPDATE emop_contratos SET Valor_Liquidado_Na_Medicao_RS = '{$vlr_med}', Valor_Liquidado_Acumulado = '{$acum}', Percentual_Executado = '{$perc_exec}' WHERE id = {$contrato_id}");
            }
            $conn->query("UPDATE emop_contratos SET Aditivos_RS = '{$totalAditivos}', Contrato_Apos_Aditivo_Valor_Total_RS = '{$valorAposAditivos}', Valor_Dos_Reajustes_RS = '{$totalReajustes}', Valor_Total_Do_Contrato_Novo = '{$valorTotalAtualContrato}' WHERE id = {$contrato_id}");
+      }
+
+      // === REGISTRA AUDITORIA DA ALTERAÇÃO (APENAS SE HOUVER ALGUMA) ===
+      if (!empty($alteracoes_realizadas)) {
+          $detalhes_log = strip_tags(implode("\n", $alteracoes_realizadas));
+          // ação armazenada genérica, mas não será exibida (SALVAR_DIRETO some da tela)
+          coh_log_contrato_change($conn, $contrato_id, 'SALVAR_DIRETO', $detalhes_log);
       }
 
       flash_set('success','Alterações salvas com sucesso (Gerenciamento).');
@@ -482,15 +533,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'novos_reajustes'  => $novos_reajustes,
     ];
 
-    // 4) Grava na inbox do Coordenador (SEM bloquear se não houver campo "simples")
+    // 4) Grava na inbox do Coordenador [PASSO 3: LÓGICA DE SALVAMENTO]
     ensure_coordenador_inbox_schema($conn);
     $dir = (string)($rowNow['Diretoria'] ?? $_POST['Diretoria'] ?? $user_dir);
     if ($dir === 'DIRIM') $dir = 'DIRM';
     $fiscal_id = (int)($_SESSION['user_id'] ?? 0);
     $json = json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 
-    $st = $conn->prepare("INSERT INTO coordenador_inbox(contrato_id,diretoria,fiscal_id,payload_json,status) VALUES (?,?,?,?, 'PENDENTE')");
-    $st->bind_param("isis", $contrato_id, $dir, $fiscal_id, $json);
+    // Tenta pegar o ID da revisão vindo do input hidden (que criamos no Passo 2-A)
+    $review_id_post = (int)($_POST['review_id'] ?? $_GET['review_id'] ?? 0);
+
+    if ($review_id_post > 0) {
+        // --- CENÁRIO: REVISÃO (UPDATE) ---
+        // Ao atualizar o status para 'PENDENTE', o item some da lista de "Needs Revision" do fiscal
+        // e volta a aparecer na lista do Coordenador.
+        $st = $conn->prepare("UPDATE coordenador_inbox SET payload_json=?, status='PENDENTE', created_at=NOW() WHERE id=? AND fiscal_id=?");
+        $st->bind_param("sii", $json, $review_id_post, $fiscal_id);
+    } else {
+        // --- CENÁRIO: NOVO PEDIDO (INSERT) ---
+        // Cria um registro novo do zero
+        $st = $conn->prepare("INSERT INTO coordenador_inbox(contrato_id,diretoria,fiscal_id,payload_json,status) VALUES (?,?,?,?, 'PENDENTE')");
+        $st->bind_param("isis", $contrato_id, $dir, $fiscal_id, $json);
+    }
+
     if ($st->execute()) {
         $_SESSION['APROV_PAYLOAD'] = $payload;
         $HIDE_FORM = true;
@@ -502,13 +567,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ===== SELECT e Layout =====
-$row = []; $id = $contrato_id = (int)$contrato_id;
+$row = []; 
+$id = $contrato_id = (int)$contrato_id;
+$review_id = (int)($_GET['review_id'] ?? 0); // Captura o ID da revisão
+$draft_lists = ['medicoes'=>[], 'aditivos'=>[], 'reajustes'=>[]]; // Inicializa listas
+$lastLog = null; // última alteração registrada
+
+// 1. Carrega dados originais do contrato
 if ($contrato_id > 0) {
   $alias = 'c';
   $whereScope = build_scope_for_select_simple($conn, $alias, $user_level);
   if ($st = $conn->prepare("SELECT {$alias}.* FROM emop_contratos {$alias} WHERE {$alias}.id=? AND ({$whereScope}) LIMIT 1")) {
-    $st->bind_param('i', $contrato_id); $st->execute(); $rs = $st->get_result(); $row = ($rs && $rs->num_rows) ? $rs->fetch_assoc() : []; $st->close();
+    $st->bind_param('i', $contrato_id); $st->execute(); 
+    $rs = $st->get_result(); 
+    $row = ($rs && $rs->num_rows) ? $rs->fetch_assoc() : []; 
+    $st->close();
   }
+}
+
+// 2. LÓGICA DE REVISÃO: Se houver review_id, busca o rascunho e sobrescreve
+$highlight_fields = []; // Inicializa array de destaques
+
+if ($review_id > 0) {
+    // Busca a solicitação na inbox do coordenador
+    if ($st = $conn->prepare("SELECT payload_json FROM coordenador_inbox WHERE id = ?")) {
+        $st->bind_param('i', $review_id);
+        $st->execute();
+        $resRev = $st->get_result();
+        if ($rowRev = $resRev->fetch_assoc()) {
+            $payload = json_decode($rowRev['payload_json'], true);
+            
+            // A) "OPÇÃO NUCLEAR" - Preenche todas as variações de chaves para garantir que o HTML ache
+            if (!empty($payload['campos']) && is_array($payload['campos'])) {
+                
+                foreach ($payload['campos'] as $key => $val) {
+                    // 1. Chave Original (como veio do JSON/HTML)
+                    $row[$key] = $val;
+                    
+                    // 2. Chave Totalmente Minúscula (ex: valor_do_contrato)
+                    $row[strtolower($key)] = $val;
+                    
+                    // 3. Chave Totalmente Maiúscula (ex: VALOR_DO_CONTRATO)
+                    $row[strtoupper($key)] = $val;
+                    
+                    // 4. Tenta adivinhar o padrão do banco (ex: Valor_Do_Contrato)
+                    // Útil para campos normais, mas pode falhar em siglas como "Processo_SEI"
+                    $capitalized = str_replace(' ', '_', ucwords(str_replace('_', ' ', strtolower($key))));
+                    $row[$capitalized] = $val;
+
+                    // Adiciona TODAS as versões na lista de destaque (para o JS pintar a borda vermelha)
+                    $highlight_fields[] = $key;
+                    $highlight_fields[] = strtolower($key);
+                    $highlight_fields[] = $capitalized;
+                }
+
+                // Aviso visual
+                $_SESSION['flash_messages'][] = ['type'=>'warning', 'message'=>'MODO DE REVISÃO: Corrija os campos destacados em vermelho.'];
+            }
+
+            // B) Prepara listas complexas para o JS (Medições/Aditivos)
+            if (!empty($payload['novas_medicoes']))  $draft_lists['medicoes']  = $payload['novas_medicoes'];
+            if (!empty($payload['novos_aditivos']))  $draft_lists['aditivos']  = $payload['novos_aditivos'];
+            if (!empty($payload['novos_reajustes'])) $draft_lists['reajustes'] = $payload['novos_reajustes'];
+        }
+        $st->close();
+    }
+}
+
+// 3. Carrega última alteração registrada na auditoria (se existir)
+if ($contrato_id > 0) {
+    ensure_contratos_log_schema($conn);
+    if ($st = $conn->prepare("SELECT contrato_id, usuario_nome, diretoria, acao, detalhes, created_at 
+                              FROM emop_contratos_log 
+                              WHERE contrato_id=? 
+                              ORDER BY created_at DESC, id DESC 
+                              LIMIT 1")) {
+        $st->bind_param('i', $contrato_id);
+        $st->execute();
+        $rsLog = $st->get_result();
+        if ($rsLog && $rsLog->num_rows) {
+            $lastLog = $rsLog->fetch_assoc();
+        }
+        $st->close();
+    }
 }
 
 require_once __DIR__ . '/partials/header.php';
@@ -532,8 +673,90 @@ if (isset($_SESSION['flash_messages'])) {
      unset($_SESSION['flash_messages']);
 }
 
-if (!$HIDE_FORM && ($contrato_id || $is_new)) require_once __DIR__ . '/partials/form_emop_contratos.php';
-else require_once __DIR__ . '/partials/form_contratos_busca.php';
+if (!$HIDE_FORM && ($contrato_id || $is_new)) {
+    require_once __DIR__ . '/partials/form_emop_contratos.php';
+
+    // === RODAPÉ: INFORMAÇÕES DA ÚLTIMA ALTERAÇÃO DO CONTRATO ===
+    if ($contrato_id > 0 && !empty($lastLog)) {
+
+        // Formata data
+        $dtFmt = '';
+        if (!empty($lastLog['created_at'])) {
+            $ts = strtotime($lastLog['created_at']);
+            if ($ts) {
+                $dtFmt = date('d/m/Y \à\s H:i', $ts);
+            }
+        }
+
+        // Calcula o ÚLTIMO CAMPO atualizado a partir de "detalhes"
+        $ultimoCampo = '';
+        if (!empty($lastLog['detalhes'])) {
+            $detRaw   = (string)$lastLog['detalhes'];
+            $detLines = preg_split('/\r\n|\r|\n/', $detRaw);
+            if (is_array($detLines) && count($detLines) > 0) {
+                $ultimoCampo = trim(end($detLines));
+            }
+        }
+
+        // Renderiza o card escondido (será reposicionado via JS logo após a seção de medições)
+        echo '<section id="contrato-last-change" class="mt-3 mb-2 d-none">';
+        echo '  <div class="card border-0 shadow-sm">';
+        echo '    <div class="card-body py-2 px-3">';
+        echo '      <small class="text-muted d-block mb-1">';
+        echo '        <i class="bi bi-clock-history me-1"></i>Última alteração registrada deste contrato';
+        echo '      </small>';
+
+        // Linha com usuário / diretoria / data
+        echo '      <div class="small">';
+        $nome = trim((string)($lastLog['usuario_nome'] ?? ''));
+        $dir  = trim((string)($lastLog['diretoria'] ?? ''));
+        if ($nome === '') $nome = 'Usuário não identificado';
+        echo        e($nome);
+        if ($dir !== '') {
+            echo ' — Diretoria ' . e($dir);
+        }
+        if ($dtFmt !== '') {
+            echo ' — ' . e($dtFmt);
+        }
+        echo '      </div>';
+
+        // Apenas o último campo atualizado (sem mostrar "SALVAR_DIRETO")
+        if ($ultimoCampo !== '') {
+            echo '      <div class="small text-muted mt-1">';
+            echo        e($ultimoCampo);
+            echo '      </div>';
+        }
+
+        echo '    </div>';
+        echo '  </div>';
+        echo '</section>';
+}
+} else {
+    require_once __DIR__ . '/partials/form_contratos_busca.php';
+}
+
+
+// --- [PASSO 2-A] Injeta o ID da revisão no formulário HTML ---
+if (isset($review_id) && $review_id > 0) {
+    echo "<script>
+    document.addEventListener('DOMContentLoaded', function(){
+        // Procura o formulário principal
+        var f = document.querySelector('form[data-form=\"emop-contrato\"]') || document.getElementById('coh-form');
+        if(f) {
+            // Cria um input hidden com o ID da revisão para ser enviado no POST
+            var i = document.createElement('input'); 
+            i.type='hidden'; i.name='review_id'; i.value='{$review_id}';
+            f.appendChild(i);
+            
+            // Feedback visual simples
+            var alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-warning fixed-bottom m-3 shadow';
+            alertDiv.innerHTML = '<strong>Modo de Revisão:</strong> Você está corrigindo a solicitação #{$review_id}.';
+            document.body.appendChild(alertDiv);
+        }
+    });
+    </script>";
+}
 echo '</main>';
 
 require_once __DIR__ . '/partials/modal_coord_inbox.php';
@@ -541,10 +764,49 @@ require_once __DIR__ . '/partials/footer.php';
 ?>
 
 <script>
-// Inicializa Objeto Global IMEDIATAMENTE
+// [PASSO 2] Inicializa Objeto Global, CARREGA RASCUNHO e DESTACA ERROS
 (function () {
   if (!window.COH) window.COH = {};
-  if (!window.COH.draft) window.COH.draft = {medicoes:[], aditivos:[], reajustes:[]};
+  
+  // 1. Carrega listas complexas (Medições/Aditivos)
+  var draftData = <?php echo json_encode($draft_lists ?? ['medicoes'=>[], 'aditivos'=>[], 'reajustes'=>[]]); ?>;
+  window.COH.draft = draftData;
+
+  // 2. Lógica de DESTAQUE (Highlight) dos campos alterados
+  var changedFields = <?php echo json_encode($highlight_fields ?? []); ?>;
+
+  document.addEventListener('DOMContentLoaded', function() {
+      if(changedFields && changedFields.length > 0) {
+          
+          changedFields.forEach(function(fieldName) {
+              // Tenta encontrar o input pelo nome (tenta seletores diferentes para garantir)
+              var el = document.querySelector('[name="'+fieldName+'"]');
+              
+              if(el) {
+                  // Aplica borda vermelha e fundo levemente avermelhado
+                  el.style.border = '2px solid #dc3545'; 
+                  el.style.backgroundColor = '#fff8f8';
+                  el.setAttribute('title', 'DADO ANTERIOR (RECUSADO). Por favor, corrija.');
+                  
+                  // Adiciona etiqueta de erro no label
+                  var label = document.querySelector('label[for="'+el.id+'"]');
+                  if(label && !label.innerHTML.includes('(Revisar)')) {
+                      label.innerHTML += ' <span class="text-danger small fw-bold">(Revisar)</span>';
+                  }
+              }
+          });
+          
+          // Rola a tela até o primeiro erro encontrado
+          // Usamos um loop para achar o primeiro elemento visível que conseguimos marcar
+          for(var i=0; i<changedFields.length; i++){
+              var first = document.querySelector('[name="'+changedFields[i]+'"]');
+              if(first){
+                  first.scrollIntoView({behavior: 'smooth', block: 'center'});
+                  break;
+              }
+          }
+      }
+  });
 })();
 </script>
 
@@ -623,8 +885,18 @@ document.addEventListener('DOMContentLoaded', function(){
         window.cohForceSync();
     });
   }
+
+  // === Reposiciona o card "Última alteração" logo após a seção de medições ===
+  var secMed      = document.getElementById('sec-med');
+  var lastChange  = document.getElementById('contrato-last-change');
+
+  if (secMed && lastChange) {
+      secMed.insertAdjacentElement('afterend', lastChange);
+      lastChange.classList.remove('d-none');
+  }
 });
 </script>
+
 
 <script>
 // FUNÇÕES GLOBAIS DE RENDERIZAÇÃO (corrigidas)
@@ -732,80 +1004,101 @@ document.addEventListener('DOMContentLoaded', function() {
 
 window.cohDeleteDbItem = function(tipo, id) {
     if (!confirm('ATENÇÃO: Você excluirá este registro do banco e os totais serão recalculados.\n\nContinuar?')) return;
-    const fd = new FormData(); fd.append('action','delete_item'); fd.append('type',tipo); fd.append('id',id);
+
+    const fd = new FormData();
+    fd.append('action', 'delete_item');
+    fd.append('type',   tipo);
+    fd.append('id',     id);
+
     fetch('ajax/delete_contract_item.php', { method: 'POST', body: fd })
-    .then(r => r.json())
-    .then(d => {
-        if(d.success) { alert('Excluído com sucesso!'); location.reload(); }
-        else alert('Erro: ' + (d.message||'Desconhecido'));
-    })
-    .catch(e => alert('Erro de conexão.'));
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                alert('Excluído com sucesso!');
+                location.reload();
+            } else {
+                alert('Erro: ' + (d.message || 'Desconhecido'));
+            }
+        })
+        .catch(e => {
+            alert('Erro de conexão.');
+        });
 };
 
 window.cohEditDbItem = function(tipo, item) {
     let modalId = '';
-    const fmt = v => (typeof v === 'number') ? v.toLocaleString('pt-BR',{minimumFractionDigits:2}) : (v||'');
+    const fmt = v =>
+        (typeof v === 'number')
+            ? v.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
+            : (v || '');
 
     if (tipo === 'medicao') {
         modalId = 'modalMedicao';
         let root = document.getElementById(modalId);
-        if(root){
-            let inpData = root.querySelector('input[name="data_medicao"]');
+        if (root) {
+            let inpData  = root.querySelector('input[name="data_medicao"]');
             let inpValor = root.querySelector('input[name="valor_rs"]');
-            let txtObs = root.querySelector('textarea[name="observacao"]');
-            if(inpData) inpData.value = item.data_medicao ? item.data_medicao.split(' ')[0] : '';
-            if(inpValor) inpValor.value = fmt(item.valor_rs);
-            if(txtObs) txtObs.value = item.observacao || '';
-            if(inpValor) inpValor.dispatchEvent(new Event('input', {bubbles:true}));
+            let txtObs   = root.querySelector('textarea[name="observacao"]');
+
+            if (inpData)  inpData.value  = item.data_medicao ? item.data_medicao.split(' ')[0] : '';
+            if (inpValor) inpValor.value = fmt(item.valor_rs);
+            if (txtObs)   txtObs.value   = item.observacao || '';
+
+            if (inpValor) inpValor.dispatchEvent(new Event('input', { bubbles: true }));
         }
-    } 
+    }
     else if (tipo === 'aditivo') {
         modalId = 'modalAditivo';
         let root = document.getElementById(modalId);
-        if(root){
-            let inpNum = root.querySelector('input[name="numero_aditivo"]');
-            let inpData = root.querySelector('input[name="data"]');
-            let selTipo = root.querySelector('select[name="tipo"]');
+        if (root) {
+            let inpNum   = root.querySelector('input[name="numero_aditivo"]');
+            let inpData  = root.querySelector('input[name="data"]');
+            let selTipo  = root.querySelector('select[name="tipo"]');
             let inpValAd = root.querySelector('input[name="valor_aditivo_total"]');
-            let inpValTot = root.querySelector('input[name="valor_total_apos_aditivo"]');
-            let inpPrazo = root.querySelector('input[name="novo_prazo"]'); 
-            let txtObs = root.querySelector('textarea[name="observacao"]');
+            let inpValTot= root.querySelector('input[name="valor_total_apos_aditivo"]');
+            let inpPrazo = root.querySelector('input[name="novo_prazo"]');
+            let txtObs   = root.querySelector('textarea[name="observacao"]');
 
-            if(inpNum) inpNum.value = item.numero_aditivo || '';
-            if(inpData) inpData.value = item.data || (item.created_at ? item.created_at.split(' ')[0] : '');
-            
-            if(selTipo) {
+            if (inpNum)   inpNum.value   = item.numero_aditivo || '';
+            if (inpData)  inpData.value  = item.data || (item.created_at ? item.created_at.split(' ')[0] : '');
+            if (selTipo) {
                 selTipo.value = item.tipo || '';
                 selTipo.dispatchEvent(new Event('change'));
             }
-            if(inpValAd) inpValAd.value = fmt(item.valor_aditivo_total);
-            if(inpValTot) inpValTot.value = fmt(item.valor_total_apos_aditivo);
-            if(inpPrazo) inpPrazo.value = item.novo_prazo || '';
-            if(txtObs) txtObs.value = item.observacao || '';
-            
-            if(inpValAd) inpValAd.dispatchEvent(new Event('input', {bubbles:true}));
+            if (inpValAd)  inpValAd.value  = fmt(item.valor_aditivo_total);
+            if (inpValTot) inpValTot.value = fmt(item.valor_total_apos_aditivo);
+            if (inpPrazo)  inpPrazo.value  = item.novo_prazo || '';
+            if (txtObs)    txtObs.value    = item.observacao || '';
+
+            if (inpValAd) inpValAd.dispatchEvent(new Event('input', { bubbles: true }));
         }
-    } 
+    }
     else if (tipo === 'reajuste') {
         modalId = 'modalReajuste';
         let root = document.getElementById(modalId);
-        if(root){
-            let inpData = root.querySelector('input[name="data_base"]');
-            let inpPerc = root.querySelector('input[name="percentual"]');
-            let inpValTot = root.querySelector('input[name="valor_total_apos_reajuste"]');
-            let txtObs = root.querySelector('textarea[name="observacao"]');
-            if(inpData) inpData.value = item.data_base || '';
-            if(inpPerc) inpPerc.value = item.percentual || (item.reajustes_percentual ? String(item.reajustes_percentual).replace('.',',') : '');
-            if(inpValTot) inpValTot.value = fmt(item.valor_total_apos_reajuste);
-            if(txtObs) txtObs.value = item.observacao || '';
-            if(inpValTot) inpValTot.dispatchEvent(new Event('change', {bubbles:true}));
+        if (root) {
+            let inpData  = root.querySelector('input[name="data_base"]');
+            let inpPerc  = root.querySelector('input[name="percentual"]');
+            let inpValTot= root.querySelector('input[name="valor_total_apos_reajuste"]');
+            let txtObs   = root.querySelector('textarea[name="observacao"]');
+
+            if (inpData)  inpData.value  = item.data_base || '';
+            if (inpPerc)  inpPerc.value  = item.percentual ||
+                              (item.reajustes_percentual
+                                  ? String(item.reajustes_percentual).replace('.', ',')
+                                  : '');
+            if (inpValTot) inpValTot.value = fmt(item.valor_total_apos_reajuste);
+            if (txtObs)    txtObs.value    = item.observacao || '';
+
+            if (inpValTot) inpValTot.dispatchEvent(new Event('change', { bubbles: true }));
         }
     }
 
-    if(modalId) {
+    if (modalId) {
         let m = bootstrap.Modal.getOrCreateInstance(document.getElementById(modalId));
         m.show();
-        setTimeout(()=> alert('MODO DE EDIÇÃO:\n\n1. Ajuste os dados.\n2. Salve como NOVO.\n3. Exclua o item antigo da lista.'), 300);
+        setTimeout(() => {
+            alert('MODO DE EDIÇÃO:\n\n1. Ajuste os dados.\n2. Salve como NOVO.\n3. Exclua o item antigo da lista.');
+        }, 300);
     }
 };
-</script>

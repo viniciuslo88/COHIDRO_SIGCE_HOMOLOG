@@ -8,47 +8,65 @@ $__cid = (int)($id ?? ($row['id'] ?? 0));
 $pode_ver_botoes = isset($user_level) ? ($user_level >= 1) : false;
 $is_read_only     = isset($is_read_only) ? $is_read_only : false;
 
-// === CÁLCULO MANUAL DA BASE DO CONTRATO PARA O JS ===
-// Pega valor original
-$valor_original = 0.0;
-if (isset($row) && !empty($row['Valor_Do_Contrato'])) {
-     $raw = trim((string)$row['Valor_Do_Contrato']);
-     $raw = str_replace(['.', ','], ['', '.'], $raw);
-     $valor_original = (float)$raw;
+// === CÁLCULO DA BASE DO CONTRATO (CORRIGIDO PARA FORMATO SQL E BRL) ===
+
+$valor_base_contrato = 0.0;
+$usou_coluna_nova = false;
+
+// Função auxiliar para limpar números híbridos (BRL ou SQL)
+function coh_limpar_valor_hibrido($v) {
+    $v = trim((string)$v);
+    // Se tiver vírgula, assume formato BR (ex: 1.000,00)
+    if (strpos($v, ',') !== false) {
+        $v = str_replace('.', '', $v); // Remove ponto de milhar
+        $v = str_replace(',', '.', $v); // Troca vírgula por ponto decimal
+    } else {
+        // Se NÃO tem vírgula, assume formato SQL (ex: 1000.00)
+        // Remove tudo que não for dígito ou ponto
+        $v = preg_replace('/[^\d.]/', '', $v);
+    }
+    return (float)$v;
 }
 
-// Soma aditivos existentes no banco e pega o último acumulado
-$soma_aditivos_banco = 0.0;
-$ultimo_acumulado    = 0.0;
-if ($__cid > 0) {
-    // Soma dos valores de aditivo
-    $qSoma = "SELECT SUM(valor_aditivo_total) as total FROM emop_aditivos WHERE contrato_id = $__cid";
-    if($rsS = $conn->query($qSoma)){
-        $rS = $rsS->fetch_assoc();
-        $soma_aditivos_banco = (float)($rS['total'] ?? 0);
-    }
-
-    // Último "valor_total_apos_aditivo" gravado (contrato após o último aditivo)
-    $qUlt = "SELECT valor_total_apos_aditivo 
-             FROM emop_aditivos 
-             WHERE contrato_id = $__cid 
-             ORDER BY created_at DESC, id DESC 
-             LIMIT 1";
-    if($rsU = $conn->query($qUlt)){
-        $rU = $rsU->fetch_assoc();
-        $ultimo_acumulado = (float)($rU['valor_total_apos_aditivo'] ?? 0);
+// 1. Tenta pegar da coluna nova solicitada (Valor_Total_Do_Contrato_Novo)
+if (isset($row) && !empty($row['Valor_Total_Do_Contrato_Novo'])) {
+    $valor_base_contrato = coh_limpar_valor_hibrido($row['Valor_Total_Do_Contrato_Novo']);
+    
+    // Se achou valor válido (> 0), marcamos que usamos a coluna nova
+    if ($valor_base_contrato > 0) {
+        $usou_coluna_nova = true;
     }
 }
 
-// Base para o próximo aditivo:
-// 1) se tiver último acumulado > 0, usa ele;
-// 2) senão, se tiver soma de aditivos, usa original + soma;
-// 3) senão, só o original.
-$valor_base_contrato = $valor_original;
-if ($ultimo_acumulado > 0) {
-    $valor_base_contrato = $ultimo_acumulado;
-} elseif ($soma_aditivos_banco > 0) {
-    $valor_base_contrato = $valor_original + $soma_aditivos_banco;
+// 2. Se não achou na nova, tenta na antiga (Valor_Do_Contrato)
+if (!$usou_coluna_nova && isset($row) && !empty($row['Valor_Do_Contrato'])) {
+    $valor_base_contrato = coh_limpar_valor_hibrido($row['Valor_Do_Contrato']);
+}
+
+// 3. Verifica aditivos no banco APENAS se não usou a coluna nova
+if (!$usou_coluna_nova) {
+    $soma_aditivos_banco = 0.0;
+    $ultimo_acumulado    = 0.0;
+
+    if ($__cid > 0) {
+        $qSoma = "SELECT SUM(valor_aditivo_total) as total FROM emop_aditivos WHERE contrato_id = $__cid";
+        if($rsS = $conn->query($qSoma)){
+            $rS = $rsS->fetch_assoc();
+            $soma_aditivos_banco = (float)($rS['total'] ?? 0);
+        }
+
+        $qUlt = "SELECT valor_total_apos_aditivo FROM emop_aditivos WHERE contrato_id = $__cid ORDER BY created_at DESC, id DESC LIMIT 1";
+        if($rsU = $conn->query($qUlt)){
+            $rU = $rsU->fetch_assoc();
+            $ultimo_acumulado = (float)($rU['valor_total_apos_aditivo'] ?? 0);
+        }
+    }
+
+    if ($ultimo_acumulado > 0) {
+        $valor_base_contrato = $ultimo_acumulado;
+    } elseif ($soma_aditivos_banco > 0) {
+        $valor_base_contrato += $soma_aditivos_banco;
+    }
 }
 
 
@@ -103,15 +121,15 @@ if ($__cid > 0) {
       $valor      = ($r['valor_aditivo_total']      !== null ? (float)$r['valor_aditivo_total']      : 0.0);
       $acum_total = ($r['valor_total_apos_aditivo'] !== null ? (float)$r['valor_total_apos_aditivo'] : $prev_acum + $valor);
       $__aditivos_salvos[] = [
-        'id'                       => $r['id'],
-        'created_at'               => $r['created_at'],
-        'novo_prazo'               => $r['novo_prazo'],
-        'numero_aditivo'           => $r['numero_aditivo'],
-        'tipo'                     => $r['tipo'],
-        'valor_aditivo_total'      => $valor,
+        'id'                        => $r['id'],
+        'created_at'                => $r['created_at'],
+        'novo_prazo'                => $r['novo_prazo'],
+        'numero_aditivo'            => $r['numero_aditivo'],
+        'tipo'                      => $r['tipo'],
+        'valor_aditivo_total'       => $valor,
         'valor_total_apos_aditivo' => $acum_total,
-        'aditivo_anterior'         => $prev_acum,
-        'observacao'               => $r['observacao']
+        'aditivo_anterior'          => $prev_acum,
+        'observacao'                => $r['observacao']
       ];
       $prev_acum = $acum_total;
     }
@@ -131,7 +149,7 @@ if ($__cid > 0) {
            role="button"
            data-bs-toggle="modal" 
            data-bs-target="#modalAditivo">
-           + Adicionar Aditivo
+           + Inserir Aditivo
         </a>
     </div>
     <?php endif; ?>
@@ -152,11 +170,18 @@ if ($__cid > 0) {
           <tbody>
             <?php foreach ($__aditivos_salvos as $a): ?>
               <?php 
+                 // segundos restantes desde a criação (para o contador visual)
                  $segundos_restantes = 0;
-                 $pode_mexer = false;
-                 if ($pode_ver_botoes && !empty($a['created_at'])) {
+                 if (!empty($a['created_at'])) {
                       $criado_em = strtotime($a['created_at']);
                       $segundos_restantes = 86400 - (time() - $criado_em);
+                      if ($segundos_restantes < 0) $segundos_restantes = 0;
+                 }
+
+                 // regra: nível 5 (admin/dev) pode sempre mexer;
+                 // demais níveis só dentro das 24h
+                 $pode_mexer = false;
+                 if ($pode_ver_botoes && !empty($a['created_at'])) {
                       if ($user_level >= 5) {
                           $pode_mexer = true;
                       } else {
@@ -166,23 +191,42 @@ if ($__cid > 0) {
               ?>
               <tr>
                 <td><?= $a['created_at'] ? e(date('d/m/Y', strtotime($a['created_at']))) : '—' ?></td>
-                <td><strong><?= e($a['numero_aditivo'] ?? '') ?></strong><br><small class="text-muted"><?= e($a['tipo'] ?? '') ?></small></td>
+                <td>
+                    <strong><?= e($a['numero_aditivo'] ?? '') ?></strong><br>
+                    <small class="text-muted"><?= e($a['tipo'] ?? '') ?></small>
+                </td>
                 <td><?= coh_brl($a['valor_aditivo_total'] ?? 0) ?></td>
                 <td><?= coh_brl($a['valor_total_apos_aditivo'] ?? 0) ?></td>
                 <td><?= $a['novo_prazo'] !== null ? e($a['novo_prazo']) : '—' ?></td>
                 <td class="text-end" style="min-width: 140px;">
                     <?php if ($pode_mexer): ?>
                         <div class="btn-group btn-group-sm mb-1">
-                            <button type="button" class="btn btn-outline-secondary" onclick='cohEditDbItem("aditivo", <?= json_encode($a) ?>)' title="Editar"><i class="bi bi-pencil"></i></button>
-                            <button type="button" class="btn btn-outline-danger" onclick="cohDeleteDbItem('aditivo', <?= $a['id'] ?>)" title="Excluir"><i class="bi bi-trash"></i></button>
+                            <button type="button"
+                                    class="btn btn-outline-secondary"
+                                    onclick='cohEditDbItem("aditivo", <?= json_encode($a) ?>)'
+                                    title="Editar">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button type="button"
+                                    class="btn btn-outline-danger"
+                                    onclick="cohDeleteDbItem('aditivo', <?= (int)$a['id'] ?>)"
+                                    title="Excluir">
+                                <i class="bi bi-trash"></i>
+                            </button>
                         </div>
-                        <?php if ($segundos_restantes > 0): ?>
-                        <div class="text-danger small fw-bold timer-24h" data-seconds="<?= $segundos_restantes ?>" style="font-size: 0.7rem;">Calculando...</div>
+
+                        <?php if ($segundos_restantes > 0 && $user_level < 5): ?>
+                            <div class="text-danger small fw-bold timer-24h"
+                                 data-seconds="<?= (int)$segundos_restantes ?>"
+                                 style="font-size: 0.7rem;">
+                                Calculando...
+                            </div>
+                        <?php else: ?>
+                            <span class="badge text-bg-success">Salvo</span>
                         <?php endif; ?>
-                    <?php elseif($pode_ver_botoes): ?>
-                        <span class="badge text-bg-secondary">Tempo Esgotado</span>
+
                     <?php else: ?>
-                         <span class="badge text-bg-success">Salvo</span>
+                        <span class="badge text-bg-success">Salvo</span>
                     <?php endif; ?>
                 </td>
               </tr>
@@ -195,14 +239,13 @@ if ($__cid > 0) {
     <?php endif; ?>
 </div>
 
-<input type="hidden" id="valor_base_contrato" value="<?= e($valor_base_contrato) ?>">
+<input type="hidden" id="valor_base_contrato" value="<?= number_format($valor_base_contrato, 2, '.', '') ?>">
 
 <div class="modal fade" id="modalAditivo" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered"><div class="modal-content">
     <div class="modal-header"><h5 class="modal-title">Novo Aditivo</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body">
       <div class="row g-3">
-        <div class="col-md-3"><label class="form-label">Número</label><input type="text" name="numero_aditivo" class="form-control"></div>
         <div class="col-md-4"><label class="form-label">Data</label><input type="date" name="data" class="form-control"></div>
         <div class="col-md-5">
             <label class="form-label">Tipo</label>
@@ -224,7 +267,7 @@ if ($__cid > 0) {
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary" onclick="salvarAditivoNoDraft()">Adicionar à Lista</button>
+      <button type="button" class="btn btn-primary" onclick="salvarAditivoNoDraft()">Inserir à Lista</button>
     </div>
   </div></div>
 </div>
@@ -336,7 +379,8 @@ document.addEventListener('DOMContentLoaded', function(){
       }
   }
 
-  var valorBaseContrato = baseInput ? parseBRL(baseInput.value) : 0;
+  // Use parseFloat aqui, pois o input já está em formato float limpo
+  var valorBaseContrato = baseInput ? parseFloat(baseInput.value) : 0;
 
   var inpValor = document.getElementById('adt_valor');
   var inpTotal = document.getElementById('adt_total');
@@ -353,8 +397,9 @@ document.addEventListener('DOMContentLoaded', function(){
       var modal = document.getElementById('modalAditivo');
       if (modal) {
           modal.addEventListener('shown.bs.modal', function () {
-              // recalcula base do input (caso tenha mudado no back-end e a página foi recarregada)
-              valorBaseContrato = baseInput ? parseBRL(baseInput.value) : 0;
+              // CORREÇÃO: Usar parseFloat, pois o hidden já vem como 1234.56
+              valorBaseContrato = baseInput ? parseFloat(baseInput.value) : 0;
+              
               inpValor.value = '';
               inpTotal.value = formatBRL(valorBaseContrato);
           });
@@ -367,4 +412,3 @@ document.addEventListener('DOMContentLoaded', function(){
 
 });
 </script>
-

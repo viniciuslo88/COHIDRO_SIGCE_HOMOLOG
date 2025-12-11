@@ -131,11 +131,21 @@ if ($role === ROLE_FISCAL) {
 if ($status !== 'TODOS' && $status !== '') $where[] = "UPPER(a.status) = '".$conn->real_escape_string($status)."'";
 if ($de  !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/',$de))  $where[] = "DATE(a.created_at) >= '".$conn->real_escape_string($de)."'";
 if ($ate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/',$ate)) $where[] = "DATE(a.created_at) <= '".$conn->real_escape_string($ate)."'";
-if ($q   !== '') { $qq=$conn->real_escape_string($q); $where[]="(c.Empresa LIKE '%{$qq}%' OR c.Objeto_Da_Obra LIKE '%{$qq}%' OR a.review_notes LIKE '%{$qq}%' OR a.motivo_rejeicao LIKE '%{$qq}%')"; }
+if ($q   !== '') {
+  $qq=$conn->real_escape_string($q);
+  $where[]="(c.Empresa LIKE '%{$qq}%' OR c.Objeto_Da_Obra LIKE '%{$qq}%' OR a.review_notes LIKE '%{$qq}%' OR a.motivo_rejeicao LIKE '%{$qq}%')";
+}
 
 $sql = "SELECT {$sel} FROM {$table} a {$join} ".(count($where)?('WHERE '.implode(' AND ',$where)):'')." ORDER BY a.contrato_id DESC, a.created_at DESC, a.id DESC";
-$rows = []; if ($rs = $conn->query($sql)) { while ($r = $rs->fetch_assoc()) $rows[] = $r; if($rs) $rs->free(); }
-$byContrato = []; foreach ($rows as $r) { $byContrato[(int)$r['contrato_id']][] = $r; }
+$rows = [];
+if ($rs = $conn->query($sql)) {
+  while ($r = $rs->fetch_assoc()) $rows[] = $r;
+  if($rs) $rs->free();
+}
+$byContrato = [];
+foreach ($rows as $r) {
+  $byContrato[(int)$r['contrato_id']][] = $r;
+}
 $cacheAntes = [];
 function contrato_antes(mysqli $conn, array &$cache, int $cid): array {
   if (!isset($cache[$cid])) {
@@ -151,15 +161,41 @@ ob_start();
 ?>
 <link href="/assets/bootstrap.min.css" rel="stylesheet">
 <style>
-  :root{ --card-bd:#e9edf1; --muted:#6b7280; --chip:#f1f5f9; --chip-bd:#e2e8f0;
-         --pill-bd:#e5e7eb; --pill-bg:#f8fafc; --after-bg:#e8fff1; --after-bd:#c8f0d6; }
+  :root{
+    --card-bd:#e9edf1;
+    --muted:#6b7280;
+    --chip:#f1f5f9;
+    --chip-bd:#e2e8f0;
+    --pill-bd:#e5e7eb;
+    --pill-bg:#f8fafc;
+    --after-bg:#e8fff1;
+    --after-bd:#c8f0d6;
+  }
   .page { max-width: 1180px; margin: 1rem auto; }
   .sticky-head{ position: sticky; top:0; z-index:5; background:#fff; padding:.5rem 0 .25rem; }
   .toolbar { gap:.5rem; }
-  .chip{ background:var(--chip); border:1px solid var(--chip-bd); padding:.15rem .5rem; border-radius:999px; font-size:.75rem; }
-  .pill{ display:inline-block; padding:.2rem .5rem; border-radius:999px; font-size:.85rem; line-height:1; border:1px solid var(--pill-bd); background:var(--pill-bg); }
+  .chip{
+    background:var(--chip);
+    border:1px solid var(--chip-bd);
+    padding:.15rem .5rem;
+    border-radius:999px;
+    font-size:.75rem;
+  }
+  .pill{
+    display:inline-block;
+    padding:.2rem .5rem;
+    border-radius:999px;
+    font-size:.85rem;
+    line-height:1;
+    border:1px solid var(--pill-bd);
+    background:var(--pill-bg);
+  }
   .pill.before s{ opacity:.65; }
-  .pill.after{ background:var(--after-bg); border-color:var(--after-bd); font-weight:700; }
+  .pill.after{
+    background:var(--after-bg);
+    border-color:var(--after-bd);
+    font-weight:700;
+  }
   .arrow{ margin:0 .35rem; opacity:.6; }
 </style>
 
@@ -174,7 +210,9 @@ ob_start();
     </div>
 
     <form class="row g-2 align-items-end" method="get" action="">
-      <?php if($contrato_id>0): ?><input type="hidden" name="contrato_id" value="<?= (int)$contrato_id ?>"><?php endif; ?>
+      <?php if($contrato_id>0): ?>
+        <input type="hidden" name="contrato_id" value="<?= (int)$contrato_id ?>">
+      <?php endif; ?>
 
       <?php if($role >= ROLE_DIRETOR): ?>
       <div class="col-auto">
@@ -202,7 +240,7 @@ ob_start();
         <label class="form-label mb-0 small">Status</label>
         <select class="form-select form-select-sm" name="status">
           <option value="TODOS" <?= $status==='TODOS'?'selected':'' ?>>Todos</option>
-          <option value="PENDENTE" <?= $status==='PENDENTE'?'selected':'' ?>>Pendente</option>
+          <option value="PENDENTE" <?= $status==='PENDENTE'?'selected':'' ?>>Pendente (aguardando aprovação)</option>
           <option value="APROVADO" <?= $status==='APROVADO'?'selected':'' ?>>Aprovado</option>
           <option value="REJEITADO" <?= $status==='REJEITADO'?'selected':'' ?>>Rejeitado</option>
           <option value="REVISAO_SOLICITADA" <?= $status==='REVISAO_SOLICITADA'?'selected':'' ?>>Revisão Solicitada</option>
@@ -245,38 +283,91 @@ ob_start();
             $payload = json_decode((string)($row['payload_json'] ?? ''), true);
             $status_raw   = strtoupper(trim((string)($row['status'] ?? 'PENDENTE')));
             $status_label = status_label_ptbr($status_raw);
-            $badge = ($status_raw==='APROVADO'?'success':($status_raw==='REJEITADO'?'danger':($status_raw==='REVISAO_SOLICITADA'?'warning':'secondary')));
+            $badge = ($status_raw==='APROVADO'
+                      ? 'success'
+                      : ($status_raw==='REJEITADO'
+                          ? 'danger'
+                          : ($status_raw==='REVISAO_SOLICITADA'
+                              ? 'warning'
+                              : 'secondary')));
             $itemId  = 'c'.$cid.'-'.$row['id'];
 
             $coord     = !empty($row['processed_by_name']) ? $row['processed_by_name'] : (!empty($row['processed_by']) ? 'ID '.$row['processed_by'] : '—');
             $coord_dir = isset($row['processed_by_dir']) ? (string)$row['processed_by_dir'] : '—';
             $motivo    = (string)($row['review_notes'] ?? $row['motivo_rejeicao'] ?? '');
+            $processed_at = trim((string)($row['processed_at'] ?? ''));
+
+            // ===== Descrição amigável do status (para o Fiscal) =====
+            $status_detail = '';
+            if ($status_raw === 'APROVADO') {
+              $status_detail = 'Aprovado pelo Coordenador'.
+                               ($coord && $coord !== '—' ? ' '. $coord : '').
+                               ($processed_at !== '' ? ' em '.$processed_at : '');
+            } elseif ($status_raw === 'REJEITADO') {
+              $status_detail = 'Rejeitado pelo Coordenador'.
+                               ($coord && $coord !== '—' ? ' '. $coord : '').
+                               ($processed_at !== '' ? ' em '.$processed_at : '');
+            } elseif ($status_raw === 'REVISAO_SOLICITADA') {
+              $status_detail = 'Revisão solicitada pelo Coordenador'.
+                               ($coord && $coord !== '—' ? ' '. $coord : '').
+                               ($processed_at !== '' ? ' em '.$processed_at : '');
+            } else { // PENDENTE ou outro
+              $status_detail = 'Aguardando aprovação do Coordenador.';
+            }
 
             $changes=[]; $medicoes=[]; $aditivos=[]; $reajustes=[];
             if (is_array($payload) && isset($payload['campos']) && is_array($payload['campos'])) {
               foreach ($payload['campos'] as $col => $novo) {
-                $col_db = $col; foreach ($cols as $c) { if (strcasecmp($c, $col)===0) { $col_db=$c; break; } }
+                $col_db = $col;
+                foreach ($cols as $c) {
+                  if (strcasecmp($c, $col)===0) { $col_db=$c; break; }
+                }
                 $antes = $antesRow[$col_db] ?? '—';
-                if (is_array($novo) || is_object($novo)) $novo = json_encode($novo, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-                $changes[] = ['label'=>column_label($col_db),'antes'=>($antes===''?'—':$antes),'depois'=>($novo===''?'—':$novo)];
+                if (is_array($novo) || is_object($novo)) {
+                  $novo = json_encode($novo, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+                }
+                $changes[] = [
+                  'label'=>column_label($col_db),
+                  'antes'=>($antes===''?'—':$antes),
+                  'depois'=>($novo===''?'—':$novo)
+                ];
               }
             }
             if (is_array($payload) && !empty($payload['novas_medicoes'])) {
               foreach ($payload['novas_medicoes'] as $m) {
                 if (!is_array($m)) continue;
-                $medicoes[]=['data'=>$m['data']??($m['data_medicao']??''),'valor_rs'=>$m['valor_rs']??($m['valor']??''),'acumulado'=>$m['acumulado_rs']??'','percentual'=>$m['percentual']??'','obs'=>$m['obs']??($m['observacao']??'')];
+                $medicoes[]=[
+                  'data'=>$m['data']??($m['data_medicao']??''),
+                  'valor_rs'=>$m['valor_rs']??($m['valor']??''),
+                  'acumulado'=>$m['acumulado_rs']??'',
+                  'percentual'=>$m['percentual']??'',
+                  'obs'=>$m['obs']??($m['observacao']??'')
+                ];
               }
             }
             if (is_array($payload) && !empty($payload['novos_aditivos'])) {
               foreach ($payload['novos_aditivos'] as $a) {
                 if (!is_array($a)) continue;
-                $aditivos[]=['numero'=>$a['numero_aditivo']??'','data'=>$a['data']??'','tipo'=>$a['tipo']??'','valor_total'=>$a['valor_aditivo_total']??'','valor_total_apos'=>$a['valor_total_apos_aditivo']??'','obs'=>$a['observacao']??''];
+                $aditivos[]=[
+                  'numero'=>$a['numero_aditivo']??'',
+                  'data'=>$a['data']??'',
+                  'tipo'=>$a['tipo']??'',
+                  'valor_total'=>$a['valor_aditivo_total']??'',
+                  'valor_total_apos'=>$a['valor_total_apos_aditivo']??'',
+                  'obs'=>$a['observacao']??''
+                ];
               }
             }
             if (is_array($payload) && !empty($payload['novos_reajustes'])) {
               foreach ($payload['novos_reajustes'] as $rj) {
                 if (!is_array($rj)) continue;
-                $reajustes[]=['indice'=>$rj['indice']??'','percentual'=>$rj['percentual']??'','data_base'=>$rj['data_base']??'','valor_apos'=>$rj['valor_total_apos_reajuste']??'','obs'=>$rj['observacao']??''];
+                $reajustes[]=[
+                  'indice'=>$rj['indice']??'',
+                  'percentual'=>$rj['percentual']??'',
+                  'data_base'=>$rj['data_base']??'',
+                  'valor_apos'=>$rj['valor_total_apos_reajuste']??'',
+                  'obs'=>$rj['observacao']??''
+                ];
               }
             }
           ?>
@@ -302,8 +393,13 @@ ob_start();
                     <?php endif; ?>
                     <div class="text-muted">
                       <strong>Solicitado em:</strong> <?= h($row['created_at'] ?? '—') ?> &nbsp;·&nbsp;
-                      <strong>Processado em:</strong> <?= h($row['processed_at'] ?? '—') ?>
+                      <strong>Processado em:</strong> <?= h($processed_at !== '' ? $processed_at : '—') ?>
                     </div>
+                    <?php if ($status_detail !== ''): ?>
+                      <div class="text-muted mt-1">
+                        <strong>Situação:</strong> <?= h($status_detail) ?>
+                      </div>
+                    <?php endif; ?>
                   </div>
                 </div>
 
@@ -406,13 +502,15 @@ ob_start();
 <script>
 (function(){
   document.getElementById('btnExpandAll')?.addEventListener('click', function(){
-    document.querySelectorAll('.accordion-collapse').forEach(el => {
-      if (!el.classList.contains('show')) new bootstrap.Collapse(el, {show:true});
+    document.querySelectorAll('.accordion-collapse').forEach(function(el){
+      if (!el.classList.contains('show')) {
+        new bootstrap.Collapse(el, {show: true});
+      }
     });
   });
   document.getElementById('btnCollapseAll')?.addEventListener('click', function(){
-    document.querySelectorAll('.accordion-collapse.show').forEach(el => {
-      new bootstrap.Collapse(el, {toggle:true});
+    document.querySelectorAll('.accordion-collapse.show').forEach(function(el){
+      new bootstrap.Collapse(el, {toggle: true});
     });
   });
 })();

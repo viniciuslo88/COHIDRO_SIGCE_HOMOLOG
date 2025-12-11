@@ -1,6 +1,6 @@
 <?php
 // /php/historico_alteracoes_contratos.php
-// Página de Histórico de Alterações de Contratos — com filtro de Diretoria (níveis 4 e 5) + comparativo antes/depois + solicitante correto
+// Página de Histórico de Alterações de Contratos — Dashboard/KPIs + lista detalhada
 
 header('Content-Type: text/html; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -34,7 +34,7 @@ function prettify_column($col){
 }
 function column_label($col){ $map = column_label_map(); return $map[$col] ?? prettify_column($col); }
 
-/* ===== Nome do solicitante (igual ao modal) ===== */
+/* ===== Helpers de nome (solicitante / decisor) ===== */
 function scalarize_name($v){
   if ($v === null) return '';
   if (is_scalar($v)) return (string)$v;
@@ -46,6 +46,7 @@ function scalarize_name($v){
   }
   return json_encode($v, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 }
+
 function solicitante_from_payload($payload){
   if (!is_array($payload)) return null;
   foreach ([
@@ -63,7 +64,8 @@ function solicitante_from_payload($payload){
   }
   return null;
 }
-function resolve_solicitante(array $row, $payload, mysqli $conn){
+
+function resolve_solicitante(array $row, $payload){
   foreach ([
     'fiscal_nome','fiscal','solicitante_nome','solicitante',
     'usuario_nome','usuario','user_name','requested_by','created_by_name'
@@ -75,6 +77,90 @@ function resolve_solicitante(array $row, $payload, mysqli $conn){
   $p = solicitante_from_payload(is_array($payload) ? $payload : []);
   if ($p) return $p;
   return '—';
+}
+
+/**
+ * Quem decidiu (aprovou/rejeitou)
+ * Procura em campos típicos da tabela e do payload
+ */
+function resolve_decisor(array $row, $payload){
+  if (!is_array($payload)) $payload = [];
+  $candidates = [
+    // campos na tabela
+    'decisor_nome','decisor','decisao_por_nome','decisao_por',
+    'avaliador_nome','coordenador_nome','gestor_nome',
+    'aprovado_por_nome','aprovado_por',
+    'rejeitado_por_nome','rejeitado_por',
+    'decidido_por','decidido_por_nome',
+    // eventualmente campos genéricos
+    'analista_nome','analista',
+  ];
+
+  foreach ($candidates as $k){
+    if (!empty($row[$k])) {
+      $name = trim(scalarize_name($row[$k]));
+      if ($name !== '') return $name;
+    }
+  }
+
+  foreach ($candidates as $k){
+    if (!empty($payload[$k])) {
+      $name = trim(scalarize_name($payload[$k]));
+      if ($name !== '') return $name;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Data/hora em que a decisão foi tomada.
+ * Aqui usamos updated_at como fallback padrão.
+ */
+function resolve_decision_datetime(array $row, $payload){
+  if (!is_array($payload)) $payload = [];
+
+  $decisionFields = [
+    'decision_at','decisao_em','status_at',
+    'aprovado_em','rejeitado_em',
+    'updated_at', // fallback mais genérico
+  ];
+
+  foreach ($decisionFields as $k){
+    if (!empty($row[$k]) && $row[$k] !== '0000-00-00 00:00:00') {
+      return $row[$k];
+    }
+  }
+
+  foreach ($decisionFields as $k){
+    if (!empty($payload[$k]) && $payload[$k] !== '0000-00-00 00:00:00') {
+      return $payload[$k];
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Formata tempo médio de aprovação em algo humano (Xd Yh Zmin)
+ */
+function fmt_tempo_medio($segundos){
+  $segundos = (int)$segundos;
+  if ($segundos <= 0) return '—';
+
+  $dias   = intdiv($segundos, 86400);
+  $resto  = $segundos % 86400;
+  $horas  = intdiv($resto, 3600);
+  $resto  = $resto % 3600;
+  $min    = intdiv($resto, 60);
+
+  $partes = [];
+  if ($dias > 0)  $partes[] = $dias.'d';
+  if ($horas > 0) $partes[] = $horas.'h';
+  if ($min > 0)   $partes[] = $min.'min';
+
+  if (!$partes) return 'menos de 1 min';
+  return implode(' ', $partes);
 }
 
 /* ============================================================
@@ -127,8 +213,7 @@ if ($contrato_id > 0) {
 /* ============================================================
    QUERY BASE — com regra de acesso por nível
 ============================================================ */
-// >>> ALTERAÇÃO: Join com usuarios_cohidro_sigce p/ nome do fiscal
-$where = [];
+// Join com usuarios_cohidro_sigce p/ nome do fiscal
 $select = "SELECT a.*, 
                   c.Objeto_Da_Obra AS objeto, 
                   c.Empresa AS empresa, 
@@ -138,6 +223,8 @@ $select = "SELECT a.*,
            FROM coordenador_inbox a
            LEFT JOIN emop_contratos c ON c.id = a.contrato_id
            LEFT JOIN usuarios_cohidro_sigce u ON u.id = a.fiscal_id";
+
+$where = [];
 
 if ($contrato_id > 0) {
   $where[] = "a.contrato_id = ".(int)$contrato_id;
@@ -161,6 +248,12 @@ if ($ate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $ate)) {
   $where[] = "DATE(a.created_at) <= '".$conn->real_escape_string($ate)."'";
 }
 
+// (Opcional) — Se quiser considerar busca livre, pode ativar algo assim:
+// if ($q !== '') {
+//   $qEsc = '%'.$conn->real_escape_string($q).'%';
+//   $where[] = "(c.Objeto_Da_Obra LIKE '{$qEsc}' OR c.Empresa LIKE '{$qEsc}' OR a.payload_json LIKE '{$qEsc}')";
+// }
+
 $sql = $select;
 if (count($where) > 0) {
   $sql .= " WHERE ".implode(' AND ', $where);
@@ -171,7 +264,49 @@ $sql .= " ORDER BY a.contrato_id DESC, a.created_at DESC, a.id DESC";
    EXECUÇÃO DA QUERY
 ============================================================ */
 $rows = [];
-if ($rs = $conn->query($sql)) { while ($r = $rs->fetch_assoc()) $rows[] = $r; if($rs) $rs->free(); }
+if ($rs = $conn->query($sql)) {
+  while ($r = $rs->fetch_assoc()) $rows[] = $r;
+  if($rs) $rs->free();
+}
+
+/* ============================================================
+   KPIs GLOBAIS DO PERÍODO FILTRADO
+============================================================ */
+$kpiTotal        = count($rows);
+$kpiPendentes    = 0;
+$kpiAprovados    = 0;
+$kpiRejeitados   = 0;
+$kpiTempoSegSum  = 0;
+$kpiTempoQtde    = 0;
+
+// checa se existe updated_at (usado como momento da decisão)
+$colsInbox = [];
+$hasUpdatedAt = false;
+if ($rsColsInbox = $conn->query("SHOW COLUMNS FROM coordenador_inbox")) {
+  while ($rc = $rsColsInbox->fetch_assoc()) {
+    $colsInbox[] = $rc['Field'];
+    if ($rc['Field'] === 'updated_at') $hasUpdatedAt = true;
+  }
+  $rsColsInbox->free();
+}
+
+foreach ($rows as $r) {
+  $st = strtoupper(trim((string)($r['status'] ?? 'PENDENTE')));
+  if ($st === 'PENDENTE')   $kpiPendentes++;
+  if ($st === 'APROVADO')   $kpiAprovados++;
+  if ($st === 'REJEITADO')  $kpiRejeitados++;
+
+  if ($st === 'APROVADO' && $hasUpdatedAt && !empty($r['created_at']) && !empty($r['updated_at'])) {
+    $t1 = strtotime((string)$r['created_at']);
+    $t2 = strtotime((string)$r['updated_at']);
+    if ($t1 && $t2 && $t2 > $t1) {
+      $kpiTempoSegSum += ($t2 - $t1);
+      $kpiTempoQtde++;
+    }
+  }
+}
+
+$kpiTempoMedioSeg = ($kpiTempoQtde > 0) ? (int)round($kpiTempoSegSum / $kpiTempoQtde) : 0;
 
 /* ============================================================
    AGRUPAR POR CONTRATO + CACHE do "antes"
@@ -196,31 +331,96 @@ ob_start();
 ?>
 <link href="/assets/bootstrap.min.css" rel="stylesheet">
 <style>
-  :root{ --card-bd:#e9edf1; --muted:#6b7280; --chip:#f1f5f9; --chip-bd:#e2e8f0;
-         --pill-bd:#e5e7eb; --pill-bg:#f8fafc; --after-bg:#e8fff1; --after-bd:#c8f0d6; }
+  :root{
+    --card-bd:#e9edf1;
+    --muted:#6b7280;
+    --chip:#f1f5f9;
+    --chip-bd:#e2e8f0;
+    --pill-bd:#e5e7eb;
+    --pill-bg:#f8fafc;
+    --after-bg:#e8fff1;
+    --after-bd:#c8f0d6;
+    --kpi-bg:#f9fafb;
+    --kpi-bd:#e5e7eb;
+  }
   .page { max-width: 1180px; margin: 1rem auto; }
   .sticky-head{ position: sticky; top:0; z-index:5; background:#fff; padding:.5rem 0 .25rem; }
   .toolbar { gap:.5rem; }
-  .chip{ background:var(--chip); border:1px solid var(--chip-bd); padding:.15rem .5rem; border-radius:999px; font-size:.75rem; }
+  .chip{
+    background:var(--chip);
+    border:1px solid var(--chip-bd);
+    padding:.15rem .5rem;
+    border-radius:999px;
+    font-size:.75rem;
+  }
 
   /* pílulas antes/depois */
-  .pill{ display:inline-block; padding:.2rem .5rem; border-radius:999px; font-size:.85rem; line-height:1; border:1px solid var(--pill-bd); background:var(--pill-bg); }
+  .pill{
+    display:inline-block;
+    padding:.2rem .5rem;
+    border-radius:999px;
+    font-size:.85rem;
+    line-height:1;
+    border:1px solid var(--pill-bd);
+    background:var(--pill-bg);
+  }
   .pill.before s{ opacity:.65; }
-  .pill.after{ background:var(--after-bg); border-color:var(--after-bd); font-weight:700; }
+  .pill.after{
+    background:var(--after-bg);
+    border-color:var(--after-bd);
+    font-weight:700;
+  }
   .arrow{ margin:0 .35rem; opacity:.6; }
+
+  /* KPIs */
+  .kpi-grid{
+    display:grid;
+    grid-template-columns: repeat(5, minmax(0,1fr));
+    gap:.75rem;
+    margin:1rem 0 1.25rem;
+  }
+  @media (max-width: 991.98px){
+    .kpi-grid{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+  }
+  @media (max-width: 575.98px){
+    .kpi-grid{ grid-template-columns: minmax(0,1fr); }
+  }
+  .kpi-card{
+    border-radius:.75rem;
+    border:1px solid var(--kpi-bd);
+    background:var(--kpi-bg);
+    padding:.6rem .75rem;
+    display:flex;
+    flex-direction:column;
+    gap:.15rem;
+  }
+  .kpi-label{
+    font-size:.75rem;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    color:var(--muted);
+  }
+  .kpi-value{
+    font-size:1.25rem;
+    font-weight:700;
+  }
+  .kpi-sub{
+    font-size:.75rem;
+    color:var(--muted);
+  }
 </style>
 
 <div class="page">
   <div class="sticky-head">
     <div class="d-flex justify-content-between align-items-center">
-      <h5 class="mb-2">Histórico — <?= $scope_title ?></h5>
+      <h5 class="mb-2">Histórico de Alterações de Contratos — <?= $scope_title ?></h5>
       <div class="toolbar d-flex">
         <button type="button" class="btn btn-sm btn-outline-secondary" id="btnExpandAll">Expandir todos</button>
         <button type="button" class="btn btn-sm btn-outline-secondary" id="btnCollapseAll">Recolher todos</button>
       </div>
     </div>
 
-    <!-- Filtros (mantidos DENTRO do arquivo, como no seu original) -->
+    <!-- Filtros -->
     <form class="row search-row g-2 align-items-center" method="get" action="">
       <?php if($contrato_id>0): ?>
         <input type="hidden" name="contrato_id" value="<?= (int)$contrato_id ?>">
@@ -229,7 +429,7 @@ ob_start();
       <?php if($role >= 4): ?>
       <div class="col-auto">
         <label class="form-label mb-0 small">Diretoria</label>
-        <select class="form-select" name="diretoria">
+        <select class="form-select form-select-sm" name="diretoria">
           <option value="todas" <?= (strtolower($diretoria)==='todas' || $diretoria==='')?'selected':'' ?>>Todas</option>
           <?php foreach($diretorias_opts as $d): ?>
             <option value="<?= h($d) ?>" <?= $diretoria===$d?'selected':'' ?>><?= h($d) ?></option>
@@ -242,23 +442,23 @@ ob_start();
 
       <div class="col-auto">
         <label class="form-label mb-0 small">De</label>
-        <input type="date" class="form-control" name="de" value="<?= h($de) ?>">
+        <input type="date" class="form-control form-control-sm" name="de" value="<?= h($de) ?>">
       </div>
       <div class="col-auto">
         <label class="form-label mb-0 small">Até</label>
-        <input type="date" class="form-control" name="ate" value="<?= h($ate) ?>">
+        <input type="date" class="form-control form-control-sm" name="ate" value="<?= h($ate) ?>">
       </div>
       <div class="col-auto">
         <label class="form-label mb-0 small">Status</label>
-        <select class="form-select" name="status">
+        <select class="form-select form-select-sm" name="status">
           <?php foreach(['TODOS','APROVADO','REJEITADO','PENDENTE'] as $opt): ?>
             <option value="<?= $opt ?>" <?= $status===$opt?'selected':'' ?>><?= $opt ?></option>
           <?php endforeach; ?>
         </select>
       </div>
       <div class="col">
-        <label class="form-label mb-0 small">Buscar</label>
-        <input type="text" class="form-control" name="q" placeholder="Empresa, objeto, campo, valor..." value="<?= h($q) ?>">
+        <label class="form-label mb-0 small">Busca livre</label>
+        <input type="text" class="form-control form-control-sm" name="q" placeholder="Empresa, objeto, campo, valor..." value="<?= h($q) ?>">
       </div>
       <div class="col-auto">
         <label class="form-label mb-0">&nbsp;</label>
@@ -267,8 +467,52 @@ ob_start();
     </form>
   </div>
 
+  <!-- KPIs do período filtrado -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Total de solicitações</div>
+      <div class="kpi-value"><?= (int)$kpiTotal ?></div>
+      <div class="kpi-sub">no período selecionado</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Pendentes de aprovação</div>
+      <div class="kpi-value"><?= (int)$kpiPendentes ?></div>
+      <div class="kpi-sub">
+        <?php
+          $pctPend = ($kpiTotal>0) ? round($kpiPendentes*100/$kpiTotal,1) : 0;
+          echo $pctPend.'% das solicitações';
+        ?>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Aprovadas</div>
+      <div class="kpi-value"><?= (int)$kpiAprovados ?></div>
+      <div class="kpi-sub">
+        <?php
+          $pctApr = ($kpiTotal>0) ? round($kpiAprovados*100/$kpiTotal,1) : 0;
+          echo $pctApr.'% das solicitações';
+        ?>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Rejeitadas</div>
+      <div class="kpi-value"><?= (int)$kpiRejeitados ?></div>
+      <div class="kpi-sub">
+        <?php
+          $pctRej = ($kpiTotal>0) ? round($kpiRejeitados*100/$kpiTotal,1) : 0;
+          echo $pctRej.'% das solicitações';
+        ?>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Tempo médio de aprovação</div>
+      <div class="kpi-value"><?= h(fmt_tempo_medio($kpiTempoMedioSeg)) ?></div>
+      <div class="kpi-sub">entre solicitação e decisão</div>
+    </div>
+  </div>
+
   <?php if (!$rows): ?>
-    <div class="alert alert-info mt-3">Nenhum registro de alterações encontrado.</div>
+    <div class="alert alert-info mt-3">Nenhum registro de alterações encontrado com os filtros aplicados.</div>
   <?php else: ?>
     <?php foreach ($byContrato as $cid => $items): ?>
       <div class="contract-card mb-3 border rounded">
@@ -299,12 +543,16 @@ ob_start();
             $badge   = ($statusR==='APROVADO'?'success':($statusR==='REJEITADO'?'danger':'secondary'));
             $itemId  = 'c'.$cid.'-'.$row['id'];
 
-            // >>> Fiscal: prioriza o join u.nome/u.email; fallback resolve_solicitante
+            // Fiscal (solicitante)
             $fiscal = '';
             foreach (['fiscal_nome','fiscal_email'] as $k) {
               if (!empty($row[$k])) { $fiscal = trim((string)$row[$k]); break; }
             }
-            if ($fiscal === '') $fiscal = resolve_solicitante($row, $payload, $conn);
+            if ($fiscal === '') $fiscal = resolve_solicitante($row, $payload);
+
+            // Decisor (quem aprovou/rejeitou)
+            $decisorNome = resolve_decisor($row, $payload);
+            $decisaoEm   = resolve_decision_datetime($row, $payload);
 
             // monta lista de campos alterados (exibe antes→depois)
             $changes = [];
@@ -325,7 +573,7 @@ ob_start();
               }
             }
 
-            // >>> Novas medições / aditivos / reajustes (exibição somente se houver)
+            // Novas medições / aditivos / reajustes (exibição somente se houver)
             $medicoes = []; $aditivos = []; $reajustes = [];
             if (is_array($payload) && !empty($payload['novas_medicoes']) && is_array($payload['novas_medicoes'])) {
               foreach ($payload['novas_medicoes'] as $m) {
@@ -369,16 +617,36 @@ ob_start();
             <h2 class="accordion-header" id="h-<?= $itemId ?>">
               <button class="accordion-button collapsed bg-white" type="button" data-bs-toggle="collapse" data-bs-target="#b-<?= $itemId ?>" aria-expanded="false" aria-controls="b-<?= $itemId ?>">
                 <div class="w-100 d-flex justify-content-between align-items-center">
-                  <div class="text-truncate muted"><?= h($row['objeto'] ?? '') ?></div>
+                  <div class="text-truncate text-muted"><?= h($row['objeto'] ?? '') ?></div>
                   <span class="badge bg-<?= $badge ?>"><?= h($statusR) ?></span>
                 </div>
               </button>
             </h2>
             <div id="b-<?= $itemId ?>" class="accordion-collapse collapse" aria-labelledby="h-<?= $itemId ?>" data-bs-parent="#acc-<?= (int)$cid ?>">
               <div class="accordion-body pt-2 small">
-                <div class="text-muted mb-2">
-                  Solicitado por <strong><?= h($fiscal ?: '—') ?></strong>
-                  <?php if (!empty($row['created_at'])): ?> em <?= h(date('d/m/Y H:i', strtotime((string)$row['created_at']))) ?><?php endif; ?>
+                <div class="mb-2">
+                  <div class="text-muted">
+                    Solicitado por <strong><?= h($fiscal ?: '—') ?></strong>
+                    <?php if (!empty($row['created_at'])): ?>
+                      em <?= h(date('d/m/Y H:i', strtotime((string)$row['created_at']))) ?>
+                    <?php endif; ?>
+                  </div>
+
+                  <?php if ($statusR === 'APROVADO' || $statusR === 'REJEITADO'): ?>
+                    <div class="text-muted">
+                      <?= ($statusR==='APROVADO'?'Aprovado':'Rejeitado') ?>
+                      <?php if ($decisorNome): ?>
+                        por <strong><?= h($decisorNome) ?></strong>
+                      <?php endif; ?>
+                      <?php if ($decisaoEm): ?>
+                        em <?= h(date('d/m/Y H:i', strtotime((string)$decisaoEm))) ?>
+                      <?php endif; ?>
+                    </div>
+                  <?php else: ?>
+                    <div class="text-muted">
+                      Aguardando decisão dos níveis competentes.
+                    </div>
+                  <?php endif; ?>
                 </div>
 
                 <?php if (!empty($changes)): ?>

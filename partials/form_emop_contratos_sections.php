@@ -395,12 +395,18 @@ if (!function_exists('coh_badge_rev')) {
         <input class="form-control" name="No_do_Contrato" value="<?= e($row['No_do_Contrato'] ?? '') ?>">
       </div>
 
-      <div class="col-md-3 <?= coh_has_rev('Valor_Do_Contrato')?'coh-rev':'' ?>">
-        <label class="form-label coh-label">
-          Valor do Contrato (R$)<?= coh_badge_rev('Valor_Do_Contrato') ?>
-        </label>
-        <input class="form-control brl" name="Valor_Do_Contrato" value="<?= br_money($row['Valor_Do_Contrato'] ?? '') ?>">
-      </div>
+        <div class="col-md-3 <?= coh_has_rev('Valor_Do_Contrato')?'coh-rev':'' ?>">
+          <label class="form-label coh-label">
+            Valor do Contrato (R$)<?= coh_badge_rev('Valor_Do_Contrato') ?>
+          </label>
+          <input
+            type="text"
+            inputmode="decimal"
+            class="form-control"
+            name="Valor_Do_Contrato"
+            value="<?= br_money($row['Valor_Do_Contrato'] ?? '') ?>"
+          >
+        </div>
 
       <div class="col-md-3 <?= coh_has_rev('Assinatura_Do_Contrato_Data')?'coh-rev':'' ?>">
         <label class="form-label coh-label">
@@ -1150,6 +1156,38 @@ if (!empty($row) && $contratoId > 0 && isset($conn) && $conn instanceof mysqli) 
     atualizarSaldoPorMedicoes();
     atualizarValorTotalContrato();
     atualizarPercentuaisSaldo();
+
+    // === MÁSCARA LEVE PARA "Valor do Contrato (R$)" ===
+    const inpValorContrato = document.querySelector('input[name="Valor_Do_Contrato"]');
+    if (inpValorContrato) {
+      // Formata valor inicial, se vier do PHP já preenchido
+      const iniNum = parseBRL(inpValorContrato.value);
+      if (!isNaN(iniNum) && iniNum > 0) {
+        inpValorContrato.value = 'R$ ' + formatBRL(iniNum);
+      }
+
+      // Ao focar: tira R$, pontos e espaços pra facilitar digitação
+      inpValorContrato.addEventListener('focus', function () {
+        let v = this.value || '';
+        v = v.replace(/\s/g, '');      // tira espaços
+        v = v.replace(/^R\$\s?/, '');  // tira "R$"
+        v = v.replace(/\./g, '');      // tira separador de milhar
+        // mantém vírgula se tiver
+        this.value = v;
+      });
+
+      // Ao sair: aplica R$, pontos de milhar e vírgula
+      inpValorContrato.addEventListener('blur', function () {
+        const n = parseBRL(this.value);
+        if (isNaN(n) || !this.value.trim()) {
+          this.value = '';
+          atualizarValorTotalContrato();
+          return;
+        }
+        this.value = 'R$ ' + formatBRL(n);
+        atualizarValorTotalContrato(); // recalc total + saldo + %
+      });
+    }
 
     // Observa mudanças na tabela de medições (novas linhas, etc.)
     const secMed = document.getElementById('sec-med');

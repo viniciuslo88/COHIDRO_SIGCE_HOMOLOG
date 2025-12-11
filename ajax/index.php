@@ -388,11 +388,15 @@ try {
     $municipio_counts = [];
     $uniq = [];
 
+    $targetNorm = norm_mun($F_mun_first ?? '');
+
     if(!$res = $conn->query($sql_map)) throw new Exception("SQL municipios falhou: ".$conn->error);
     while($row = $res->fetch_assoc()){
         foreach (split_municipios($row['m'] ?? '') as $mun){
             $norm = norm_mun($mun);
             if ($norm === '') continue;
+            if ($targetNorm !== '' && $norm !== $targetNorm) continue;
+
             $displayKey = strtoupper_u(trim($mun));
             $municipio_counts[$displayKey] = ($municipio_counts[$displayKey] ?? 0) + 1;
             $uniq[$norm] = true;
@@ -589,64 +593,46 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
       padding:12px 14px;
       box-shadow:0 4px 14px rgba(15,23,42,0.06);
     }
-    
-    /* área rolável */
     .table-wrap{
       max-height:70vh;
       overflow-y:auto;
-      overflow-x:hidden;             /* sem scroll horizontal */
+      overflow-x:auto;
       -webkit-overflow-scrolling: touch;
       border-radius: 12px;
-      position: relative;            /* importante pro truque do header */
     }
-    
-    /* tabela */
     .table-matriz{
       width:100%;
       table-layout:auto;
-      border-collapse:separate !important;
-      border-spacing:0;
     }
-    
-    /* cabeçalho */
     .table-matriz thead th{
+      position:sticky;
+      top:0;
+      background:linear-gradient(180deg, #f9fafb 0%, #eef2ff 100%);
+      z-index:1;
       font-size:0.78rem;
       text-transform:uppercase;
       letter-spacing:.04em;
       color:var(--coh-muted);
-      background:linear-gradient(180deg, #f9fafb 0%, #eef2ff 100%);
       border-bottom:1px solid var(--coh-border);
       padding:.40rem .55rem;
       border-right:1px solid rgba(148,163,184,0.6);
     }
-    .table-matriz thead th:last-child{
-      border-right:none;
-    }
-    
-    /* corpo: sem grade nas linhas */
+    .table-matriz thead th:last-child{ border-right:none; }
+
     .table-matriz tbody td{
       font-size:0.86rem;
       line-height:1.35;
       vertical-align:top;
       padding:.45rem .55rem;
-      border-top:none;
+      border-top:none;       /* sem grade nas linhas */
       border-right:none;
     }
-    
+
     .table-matriz tbody tr:hover{
       background:rgba(37,99,235,0.04);
     }
-    
-    /* Nº DO CONTRATO: título normal, linhas azuis */
-    .table-matriz thead th.sei-cell{
-      width:145px;
-      max-width:145px;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:clip;
-    }
-    
-    .table-matriz tbody td.sei-cell{
+
+    .table-matriz .sei-cell{
       width:145px;
       max-width:145px;
       white-space:nowrap;
@@ -655,10 +641,11 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
       font-size:0.80rem;
       line-height:1.25;
       font-weight:600;
-      color:var(--coh-primary); /* azul só nas linhas */
+      color:var(--coh-primary);
     }
     .table-matriz .diretoria-cell{
       max-width:90px;
+      width:90px;
       white-space:nowrap;
       overflow:hidden;
       text-overflow:ellipsis;
@@ -1124,12 +1111,13 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     ano: <?= json_encode($F_ano_first, JSON_UNESCAPED_UNICODE) ?>
   };
 
-  function norm(s){ return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toUpperCase().trim(); }
-  const countsNorm = {}; Object.entries(countsByMunicipio).forEach(([k,v]) => { countsNorm[norm(k)] = parseInt(v||0,10); });
-
-  function cssVar(name, fallback){
-    return getComputedStyle(document.documentElement).getPropertyValue(name)?.trim() || fallback;
+  function norm(s){
+    return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toUpperCase().trim();
   }
+  const countsNorm = {};
+  Object.entries(countsByMunicipio).forEach(([k,v]) => {
+    countsNorm[norm(k)] = parseInt(v||0,10);
+  });
 
   /* ---------- Chart.js (Pie) ---------- */
   let pieChart = null;
@@ -1138,18 +1126,22 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     if(!el) return;
     if (pieChart) { try { pieChart.destroy(); } catch(e){} }
     const dataOk = Array.isArray(pieValues) && pieValues.length > 0;
-    const textColor   = cssVar('--coh-text', '#111827');
-    const borderColor = '#e5e7eb';
-    const bgTooltip   = 'rgba(255,255,255,.95)';
-    Chart.defaults.color = textColor;
+
+    Chart.defaults.color = '#111827';
     pieChart = new Chart(el.getContext('2d'), {
       type: 'pie',
       data: { labels: pieLabels, datasets: [{ data: dataOk ? pieValues : [1] }] },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          legend: { position:'bottom', labels:{ color: textColor } },
-          tooltip: { titleColor: textColor, bodyColor:  textColor, backgroundColor: bgTooltip, borderColor: borderColor, borderWidth: 1 }
+          legend: { position:'bottom', labels:{ color: '#111827' } },
+          tooltip: {
+            titleColor: '#111827',
+            bodyColor:  '#111827',
+            backgroundColor: 'rgba(255,255,255,.95)',
+            borderColor: '#e5e7eb',
+            borderWidth: 1
+          }
         },
         animation: { duration: 250 }
       }
@@ -1157,7 +1149,7 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     window.pieChart = pieChart;
   }
 
-  /* ---------- Leaflet (Mapa) ---------- */
+  /* ---------- Leaflet (Mapa RJ) ---------- */
   let map = null, geojsonLayer = null, info = null, lastBounds = null, ro = null;
 
   function getFitPadding(el){
@@ -1173,7 +1165,6 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
   }
 
   function getColor(d){
-    // Escala fixa para tema claro
     return d > 50 ? '#0b4f9c'
          : d > 20 ? '#2e7dd1'
          : d > 10 ? '#58a6ff'
@@ -1185,14 +1176,20 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     const nome = feature.properties.name || feature.properties.NOME || feature.properties.NM_MUN || '';
     const qtd  = countsNorm[norm(nome)] || 0;
     return {
-      weight: 1, opacity: 1, color:'#9ca3af',
+      weight: 1,
+      opacity: 1,
+      color: '#9ca3af',
       fillOpacity: 0.9,
       fillColor: getColor(qtd)
     };
   }
   function highlightFeature(e){
     const l = e.target;
-    l.setStyle({ weight:2, color:'#111827', fillOpacity: 0.98 });
+    l.setStyle({
+      weight:2,
+      color: '#111827',
+      fillOpacity: 0.98
+    });
     l.bringToFront();
     info.update(l.feature.properties);
   }
@@ -1208,11 +1205,16 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
       mouseover: highlightFeature,
       mouseout: resetHighlight,
       click: () => {
+        // Ao clicar em um município no mapa, reaplica os filtros atuais + município
         const params = new URLSearchParams(window.location.search);
-        if(currentFilters.diretoria) params.set('diretoria[]', currentFilters.diretoria); else params.delete('diretoria[]');
-        if(currentFilters.secretaria) params.set('secretaria[]', currentFilters.secretaria); else params.delete('secretaria[]');
-        if(currentFilters.ano) params.set('ano[]', currentFilters.ano); else params.delete('ano[]');
+
+        if (currentFilters.diretoria) params.set('diretoria[]', currentFilters.diretoria);
+        if (currentFilters.secretaria) params.set('secretaria[]', currentFilters.secretaria);
+        if (currentFilters.ano) params.set('ano[]', currentFilters.ano);
+
+        params.delete('municipio[]');
         params.set('municipio[]', nomeRaw);
+
         window.location.search = params.toString();
       }
     });
@@ -1266,9 +1268,16 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     if (info){ try { info.remove(); } catch(e){} info = null; }
 
     info = L.control({position:'topright'});
-    info.onAdd = function(){ this._div = L.DomUtil.create('div', 'info'); this.update(); return this._div; };
+    info.onAdd = function(){
+      this._div = L.DomUtil.create('div', 'info');
+      this.update();
+      return this._div;
+    };
     info.update = function(props){
-      if(!props){ this._div.innerHTML = '<b>Mapa</b><div>Passe o mouse sobre um município</div>'; return; }
+      if(!props){
+        this._div.innerHTML = '<b>RJ</b><div>Passe o mouse sobre um município</div>';
+        return;
+      }
       const nome = props.name || props.NOME || props.NM_MUN || '';
       const qtd  = countsNorm[norm(nome)] || 0;
       this._div.innerHTML = `<b>${nome}</b><div>Contratos: <strong>${qtd}</strong></div>`;
@@ -1280,7 +1289,10 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
       let raf = 0;
       ro = new ResizeObserver(() => {
         cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(() => { mapInvalidateHard(); mapFit(false); });
+        raf = requestAnimationFrame(() => {
+          mapInvalidateHard();
+          mapFit(false);
+        });
       });
       ro.observe(el);
     } catch(e){}
@@ -1297,7 +1309,7 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
           requestAnimationFrame(doFit);
         }
       })
-      .catch(err => console.error('Falha ao carregar GeoJSON:', err));
+      .catch(err => console.error('Falha ao carregar GeoJSON RJ:', err));
 
     setTimeout(mapInvalidateHard, 50);
     setTimeout(() => mapFit(false), 180);
@@ -1314,14 +1326,25 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     mapInvalidateHard();
     mapFit(false);
   }
-  function boot(){ updateTopbarHeight(); initPie(); initMap(); setTimeout(reflowVisuals, 250); }
+  function boot(){
+    updateTopbarHeight();
+    initPie();
+    initMap();
+    setTimeout(reflowVisuals, 250);
+  }
 
-  // ===== Inicializa Choices.js (mantém seleções do PHP) =====
+  // ===== Inicializa Choices.js =====
   document.addEventListener('DOMContentLoaded', function(){
     const selects = document.querySelectorAll('.js-choices-multi');
+
     selects.forEach(sel => {
       const placeholder = sel.getAttribute('data-placeholder') || 'Selecione...';
-      new Choices(sel, {
+
+      const selectedValues = Array.from(sel.options)
+        .filter(o => o.selected && o.value !== '')
+        .map(o => o.value);
+
+      const instance = new Choices(sel, {
         removeItemButton: true,
         shouldSort: false,
         placeholder: true,
@@ -1330,9 +1353,14 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
         itemSelectText: '',
         allowHTML: false
       });
+
+      if (selectedValues.length) {
+        instance.setChoiceByValue(selectedValues);
+      }
     });
   });
 
+  // Reflow ao colapsar/abrir sidebar
   (function () {
     function reflowNow(){
       try { if (window.pieChart) window.pieChart.resize(); } catch(e){}
@@ -1340,7 +1368,12 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
       setTimeout(()=> mapFit(false), 140);
     }
     const bodyObs = new MutationObserver((muts) => {
-      for (const m of muts) if (m.type === 'attributes' && m.attributeName === 'class') { reflowNow(); break; }
+      for (const m of muts){
+        if (m.type === 'attributes' && m.attributeName === 'class') {
+          reflowNow();
+          break;
+        }
+      }
     });
     bodyObs.observe(document.body, { attributes: true });
 
@@ -1363,6 +1396,7 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
     setTimeout(()=> mapFit(false), 120);
   });
 
+  // Sidebar toggle + resize + ordenação/resize colunas
   (function(){
     const body = document.body;
     const html = document.documentElement;
@@ -1561,8 +1595,19 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
   })();
   </script>
 
-  <!-- Funções de envio dos filtros (bloqueia Enter genérico) -->
+  <!-- Funções de envio dos filtros (sem auto-submit em onchange) -->
   <script>
+    function clearMunicipioAndSubmit(form){
+      try {
+        const muns = form.querySelectorAll('select[name^="municipio"] option');
+        muns && muns.forEach(opt => { opt.selected = false; });
+      } catch(e){}
+      if (form && typeof form.requestSubmit === 'function') {
+        form.requestSubmit();
+      } else if (form) {
+        form.submit();
+      }
+    }
     (function(){
       const form = document.getElementById('filtersForm');
       if (!form) return;
@@ -1574,30 +1619,7 @@ $__just = (int)($_SESSION['just_logged_in'] ?? 0);
       }, { passive: false });
     })();
   </script>
-  
-  <script>
-    document.addEventListener('DOMContentLoaded', function () {
-      const wrap  = document.querySelector('.table-wrap');
-      if (!wrap) return;
-    
-      const thead = wrap.querySelector('.table-matriz thead');
-      if (!thead) return;
-    
-      // garante que o wrapper é o container de rolagem
-      if (!wrap.style.position) {
-        wrap.style.position = 'relative';
-      }
-    
-      // fixa visualmente o thead no topo enquanto o wrapper rola
-      wrap.addEventListener('scroll', function () {
-        const st = wrap.scrollTop || 0;
-        thead.style.transform   = 'translateY(' + st + 'px)';
-        thead.style.zIndex      = '5';
-        thead.style.willChange  = 'transform';
-      });
-    });
-    </script>
 
-    </div> <?php require __DIR__ . "/partials/footer.php"; ?>
+</div> <!-- /.coh-page -->
 
-</div> <!-- /coh-page -->
+<?php require __DIR__ . "/partials/footer.php"; ?>

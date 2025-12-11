@@ -66,30 +66,74 @@ if (!function_exists('coh_status_badge')) {
 }
 
 if (session_status() === PHP_SESSION_NONE) { session_start(); }
-$role     = (int)($_SESSION['role']      ?? 0);
-$user_dir =        $_SESSION['diretoria']?? '';
-
-// Lista fixa de diretorias disponíveis
-$DIRETORIAS = ['DIRM', 'DIROB', 'DIRPP'];
-
-// Lógica de visibilidade conforme nível de acesso
-if (in_array($role, [1, 2, 3])) {
-  // Níveis 1, 2 e 3: só veem sua diretoria
-  $DIRETORIAS = [$user_dir];
-}
+$role     = (int)($_SESSION['role']       ?? 0);
+$user_dir =        ($_SESSION['diretoria']?? '');
 
 // Usa $__SCOPE_SQL se vier do pai; senão, vazio (escopo de diretoria, etc.)
 $__SCOPE_SQL = isset($__SCOPE_SQL) ? (string)$__SCOPE_SQL : '';
 
 // ----------------------------------------------------------
-// Lista suspensa de STATUS (fixa, com os status já usados)
+// Lista suspensa de DIRETORIAS (distintas da emop_contratos)
+// respeitando o mesmo escopo de consulta ($__SCOPE_SQL)
 // ----------------------------------------------------------
-$STATUS_OPTS = [
-  'EM VIGOR',
-  'SUSPENSO',
-  'ENCERRADO',
-  'RESCINDIDO',
-];
+$DIRETORIAS = [];
+if (isset($conn) && $conn instanceof mysqli) {
+  $sqlDir = "
+    SELECT DISTINCT Diretoria
+    FROM emop_contratos
+    WHERE 1 {$__SCOPE_SQL}
+      AND Diretoria IS NOT NULL
+      AND TRIM(Diretoria) <> ''
+    ORDER BY Diretoria
+  ";
+  if ($resDir = $conn->query($sqlDir)) {
+    while ($rd = $resDir->fetch_assoc()) {
+      $DIRETORIAS[] = $rd['Diretoria'];
+    }
+    $resDir->free();
+  }
+}
+// Fallback caso o banco não retorne nada (evita select vazio)
+if (empty($DIRETORIAS)) {
+  $DIRETORIAS = ['DIRM', 'DIROB', 'DIRPP'];
+}
+
+// Lógica de visibilidade conforme nível de acesso
+// Níveis 1, 2 e 3: só veem sua diretoria
+if (in_array($role, [1, 2, 3], true) && !empty($user_dir)) {
+  $DIRETORIAS = [$user_dir];
+}
+
+// ----------------------------------------------------------
+// Lista suspensa de STATUS (distintos da emop_contratos)
+// respeitando o mesmo escopo de consulta ($__SCOPE_SQL)
+// ----------------------------------------------------------
+$STATUS_OPTS = [];
+if (isset($conn) && $conn instanceof mysqli) {
+  $sqlSt = "
+    SELECT DISTINCT Status
+    FROM emop_contratos
+    WHERE 1 {$__SCOPE_SQL}
+      AND Status IS NOT NULL
+      AND TRIM(Status) <> ''
+    ORDER BY Status
+  ";
+  if ($resSt = $conn->query($sqlSt)) {
+    while ($rs = $resSt->fetch_assoc()) {
+      $STATUS_OPTS[] = $rs['Status'];
+    }
+    $resSt->free();
+  }
+}
+// Fallback para os status padronizados, se o banco não trouxer nada
+if (empty($STATUS_OPTS)) {
+  $STATUS_OPTS = [
+    'EM VIGOR',
+    'SUSPENSO',
+    'ENCERRADO',
+    'RESCINDIDO',
+  ];
+}
 
 // ----------------------------------------------------------
 // Lista suspensa de MUNICÍPIOS (distintos da emop_contratos)
@@ -113,21 +157,52 @@ if (isset($conn) && $conn instanceof mysqli) {
   }
 }
 
+// ----------------------------------------------------------
+// Lista suspensa de EMPRESAS (distintas da emop_contratos)
+// respeitando o mesmo escopo de consulta ($__SCOPE_SQL)
+// ----------------------------------------------------------
+$EMPRESAS = [];
+if (isset($conn) && $conn instanceof mysqli) {
+  $sqlEmp = "
+    SELECT DISTINCT Empresa
+    FROM emop_contratos
+    WHERE 1 {$__SCOPE_SQL}
+      AND Empresa IS NOT NULL
+      AND TRIM(Empresa) <> ''
+    ORDER BY Empresa
+  ";
+  if ($resEmp = $conn->query($sqlEmp)) {
+    while ($re = $resEmp->fetch_assoc()) {
+      $EMPRESAS[] = $re['Empresa'];
+    }
+    $resEmp->free();
+  }
+}
+
 // ============================================================
 
 $HIDE_FORM   = $HIDE_FORM   ?? false;
 $MAX_RESULTS = (int)($MAX_RESULTS ?? 50);
 
 // Filtros
-$q         = trim((string)($_GET['q']   ?? ($_POST['q']   ?? '')));
-$diretoria = trim((string)($_GET['d']   ?? ($_POST['d']   ?? '')));
-$municipio = trim((string)($_GET['m']   ?? ($_POST['m']   ?? '')));
-$status    = trim((string)($_GET['st']  ?? ($_POST['st']  ?? '')));
-$sei       = trim((string)($_GET['sei'] ?? ($_POST['sei'] ?? '')));
-$no_con    = trim((string)($_GET['nc']  ?? ($_POST['nc']  ?? '')));
+$cid       = trim((string)($_GET['cid']  ?? ($_POST['cid']  ?? ''))); // ID (filtro, não conflita com ?id=)
+$no_con    = trim((string)($_GET['nc']   ?? ($_POST['nc']   ?? ''))); // Nº do contrato
+$diretoria = trim((string)($_GET['d']    ?? ($_POST['d']    ?? '')));
+$empresa   = trim((string)($_GET['emp']  ?? ($_POST['emp']  ?? '')));
+$municipio = trim((string)($_GET['m']    ?? ($_POST['m']    ?? '')));
+$status    = trim((string)($_GET['st']   ?? ($_POST['st']   ?? '')));
+$q         = trim((string)($_GET['q']    ?? ($_POST['q']    ?? ''))); // Busca livre
 
 // Dispara busca quando tiver algum filtro
-$do_search = ($q !== '' || $diretoria !== '' || $municipio !== '' || $status !== '' || $sei !== '' || $no_con !== '');
+$do_search = (
+  $cid       !== '' ||
+  $no_con    !== '' ||
+  $diretoria !== '' ||
+  $empresa   !== '' ||
+  $municipio !== '' ||
+  $status    !== '' ||
+  $q         !== ''
+);
 
 $results = [];
 $search_error = '';
@@ -138,23 +213,58 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
     $types = '';
     $vals  = [];
 
-    if ($q !== '') {
-      $where .= " AND (Objeto_Da_Obra LIKE ? OR Secretaria LIKE ? OR Empresa LIKE ? OR Gestor_Obra LIKE ?)";
-      $like = "%{$q}%";
-      $types .= 'ssss'; array_push($vals, $like, $like, $like, $like);
+    // Filtro por ID (apenas dígitos)
+    if ($cid !== '' && ctype_digit($cid)) {
+      $where .= " AND id = ?";
+      $types .= 'i';
+      $vals[] = (int)$cid;
     }
-    if ($diretoria !== '') { $where .= " AND Diretoria = ?";          $types .= 's'; $vals[] = $diretoria; }
-    if ($municipio !== '') { $where .= " AND Municipio = ?";          $types .= 's'; $vals[] = $municipio; }
-    if ($status    !== '') { $where .= " AND Status = ?";             $types .= 's'; $vals[] = $status; }
-    if ($sei       !== '') { $where .= " AND Processo_SEI LIKE ?";    $types .= 's'; $vals[] = "%{$sei}%"; }
-    if ($no_con    !== '') { $where .= " AND No_do_Contrato LIKE ?";  $types .= 's'; $vals[] = "%{$no_con}%"; }
+
+    // Busca livre em vários campos (inclui SEI)
+    if ($q !== '') {
+      $where .= " AND (Objeto_Da_Obra LIKE ? 
+                   OR Secretaria     LIKE ? 
+                   OR Empresa        LIKE ? 
+                   OR Gestor_Obra    LIKE ?
+                   OR Processo_SEI   LIKE ?)";
+      $like = "%{$q}%";
+      $types .= 'sssss';
+      array_push($vals, $like, $like, $like, $like, $like);
+    }
+
+    if ($diretoria !== '') { 
+      $where .= " AND Diretoria = ?";          
+      $types .= 's'; 
+      $vals[] = $diretoria; 
+    }
+    if ($empresa !== '') {
+      $where .= " AND Empresa = ?";
+      $types .= 's';
+      $vals[] = $empresa;
+    }
+    if ($municipio !== '') { 
+      $where .= " AND Municipio = ?";          
+      $types .= 's'; 
+      $vals[] = $municipio; 
+    }
+    if ($status    !== '') { 
+      $where .= " AND Status = ?";             
+      $types .= 's'; 
+      $vals[] = $status; 
+    }
+    if ($no_con    !== '') { 
+      $where .= " AND No_do_Contrato LIKE ?";  
+      $types .= 's'; 
+      $vals[] = "%{$no_con}%"; 
+    }
 
     $sql = "SELECT id, Diretoria, Municipio, Secretaria, Objeto_Da_Obra, No_do_Contrato, Processo_SEI, Status
             FROM emop_contratos
             $where
             ORDER BY id DESC
             LIMIT ?";
-    $types .= 'i'; $vals[] = $MAX_RESULTS;
+    $types .= 'i';
+    $vals[] = $MAX_RESULTS;
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) { throw new Exception('Falha ao preparar a consulta.'); }
@@ -189,15 +299,27 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
 
     <div class="card-body">
       <form method="get" action="form_contratos.php">
+        <!-- Linha 1: ID + Nº do Contrato -->
         <div class="row g-3">
-          <div class="col-md-6">
-            <label class="form-label">Busca livre (Objeto / Empresa / Secretaria)</label>
-            <input class="form-control" name="q" value="<?= e($q) ?>" placeholder="ex.: drenagem, hospital, construção...">
+          <div class="col-md-2">
+            <label class="form-label"># ID</label>
+            <input class="form-control" name="cid" value="<?= e($cid) ?>" placeholder="ex.: 123">
           </div>
 
-          <div class="col-md-3">
-            <label class="form-label">Diretoria</label>
-            <select class="form-select" name="d" <?= in_array($role, [1,2,3]) ? 'disabled' : '' ?>>
+          <div class="col-md-4">
+            <label class="form-label">📄 Nº do Contrato</label>
+            <input class="form-control" name="nc" value="<?= e($no_con) ?>" placeholder="ex.: 01/2024, 123/2022...">
+          </div>
+
+          <!-- Espaço para completar 12 colunas e alinhar com as demais linhas -->
+          <div class="col-md-6 d-none d-md-block"></div>
+        </div>
+
+        <!-- Linha 2: Diretoria, Empresa, Município, Status -->
+        <div class="row g-3 mt-1">
+          <div class="col-md-2">
+            <label class="form-label">🧭 Diretoria</label>
+            <select class="form-select" name="d" <?= in_array($role, [1,2,3], true) ? 'disabled' : '' ?>>
               <option value="">-- Todas --</option>
               <?php foreach ($DIRETORIAS as $dopt): ?>
                 <option value="<?= e($dopt) ?>" <?= $diretoria === $dopt || ($diretoria==='' && $user_dir===$dopt) ? 'selected' : '' ?>>
@@ -205,13 +327,30 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
                 </option>
               <?php endforeach; ?>
             </select>
-            <?php if (in_array($role, [1,2,3])): ?>
+            <?php if (in_array($role, [1,2,3], true)): ?>
               <input type="hidden" name="d" value="<?= e($user_dir) ?>">
             <?php endif; ?>
           </div>
 
+          <div class="col-md-4">
+            <label class="form-label">🏢 Empresa</label>
+            <select class="form-select" name="emp">
+              <option value="">-- Todas --</option>
+              <?php foreach ($EMPRESAS as $eopt): ?>
+                <?php $e_label = coh_str_limit($eopt, 40); ?>
+                <option
+                  value="<?= e($eopt) ?>"
+                  title="<?= e($eopt) ?>"
+                  <?= ($empresa === $eopt) ? 'selected' : '' ?>
+                >
+                  <?= e($e_label) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
           <div class="col-md-3">
-            <label class="form-label">Município</label>
+            <label class="form-label">📍 Município</label>
             <select class="form-select" name="m">
               <option value="">-- Todos --</option>
               <?php foreach ($MUNICIPIOS as $mopt): ?>
@@ -228,7 +367,7 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
           </div>
 
           <div class="col-md-3">
-            <label class="form-label">Status</label>
+            <label class="form-label">📊 Status</label>
             <select class="form-select" name="st">
               <option value="">-- Todos --</option>
               <?php foreach ($STATUS_OPTS as $sopt): ?>
@@ -238,22 +377,23 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
               <?php endforeach; ?>
             </select>
           </div>
+        </div>
 
-          <div class="col-md-3">
-            <label class="form-label">Processo SEI</label>
-            <input class="form-control" name="sei" value="<?= e($sei) ?>">
+        <!-- Linha 3: Busca livre -->
+        <div class="row g-3 mt-1">
+          <div class="col-md-12">
+            <label class="form-label">
+              🔍 Busca livre (Objeto / Empresa / Secretaria / Gestor / SEI)
+            </label>
+            <input class="form-control" name="q" value="<?= e($q) ?>" placeholder="ex.: drenagem, hospital, construção...">
           </div>
+        </div>
 
+        <!-- Botões -->
+        <div class="row g-3 mt-2">
           <div class="col-12 d-flex align-items-center gap-2">
             <button class="btn btn-primary" type="submit">Buscar</button>
             <a class="btn btn-outline-secondary" href="form_contratos.php">Limpar</a>
-
-            <!-- Campo + botão "Abrir por ID" à direita -->
-            <div class="ms-auto d-flex align-items-center gap-2">
-              <input type="text" id="openByIdInput" class="form-control"
-                     placeholder="ID do registro" style="max-width:160px;">
-              <button type="button" id="openByIdBtn" class="btn btn-outline-dark">Abrir por ID</button>
-            </div>
           </div>
         </div>
       </form>
@@ -308,21 +448,5 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
   <div class="d-flex justify-content-end mb-3">
     <a href="form_contratos.php?new=1" class="btn btn-success">+ Novo Contrato</a>
   </div>
-
-  <script>
-  document.addEventListener('DOMContentLoaded', function(){
-    var btn = document.getElementById('openByIdBtn');
-    var inp = document.getElementById('openByIdInput');
-    if (btn && inp){
-      btn.addEventListener('click', function(){
-        var v = (inp.value || '').trim();
-        if (v) window.location = 'form_contratos.php?id=' + encodeURIComponent(v);
-      });
-      inp.addEventListener('keydown', function(e){
-        if (e.key === 'Enter') { e.preventDefault(); btn.click(); }
-      });
-    }
-  });
-  </script>
 
 <?php endif; ?>

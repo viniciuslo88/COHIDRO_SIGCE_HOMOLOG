@@ -51,7 +51,7 @@ if (!defined('COH_DRAFT_INPUTS')) {
 
 <ul id="draft-list-medicoes" class="list-unstyled mb-3"></ul>
 <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalMedicao">
-  + Adicionar Medição
+  + Inserir Medição
 </button>
 
 <div class="mt-4">
@@ -84,9 +84,9 @@ if (!defined('COH_DRAFT_INPUTS')) {
                   ? coh_pode_alterar($m['created_at'] ?? null, $tem_permissao_geral, $m['created_by'] ?? null)
                   : $tem_permissao_geral;
 
-              // Cálculo do tempo restante (segundos)
+              // Cálculo do tempo restante (segundos) – usado só para o contador visual
               $segundos_restantes = 0;
-              if ($pode_mexer && !empty($m['created_at'])) {
+              if (!empty($m['created_at'])) {
                   $criado_em = strtotime($m['created_at']);
                   $segundos_restantes = 86400 - (time() - $criado_em);
                   if ($segundos_restantes < 0) $segundos_restantes = 0;
@@ -110,11 +110,20 @@ if (!defined('COH_DRAFT_INPUTS')) {
                       <i class="bi bi-trash"></i>
                     </button>
                   </div>
-                  <div class="text-danger small fw-bold timer-24h"
-                       data-seconds="<?= $segundos_restantes ?>" style="font-size: 0.7rem;">
-                    Calculando...
-                  </div>
+
+                  <?php if ($segundos_restantes > 0): ?>
+                    <!-- Timer 24h: só aparece enquanto ainda há tempo -->
+                    <div class="text-danger small fw-bold timer-24h"
+                         data-seconds="<?= $segundos_restantes ?>" style="font-size: 0.7rem;">
+                      Calculando...
+                    </div>
+                  <?php else: ?>
+                    <!-- Se por algum motivo já estiver zerado aqui, mostra apenas Salvo -->
+                    <span class="badge text-bg-success">Salvo</span>
+                  <?php endif; ?>
+
                 <?php else: ?>
+                  <!-- Fora da janela de 24h: sem botões, apenas badge verde -->
                   <span class="badge text-bg-success">Salvo</span>
                 <?php endif; ?>
               </td>
@@ -166,7 +175,7 @@ if (!defined('COH_DRAFT_INPUTS')) {
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-        <button type="button" class="btn btn-primary" onclick="salvarMedicaoNoDraft()">Salvar no Rascunho</button>
+        <button type="button" class="btn btn-primary" onclick="salvarMedicaoNoDraft()">Inserir à Lista</button>
       </div>
     </div>
   </div>

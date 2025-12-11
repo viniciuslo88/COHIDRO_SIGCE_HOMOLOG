@@ -90,20 +90,37 @@ $payload = [
 
 $payload_json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-// 7. Insere no coordenador_inbox
-$sqlInsert = "INSERT INTO coordenador_inbox 
-              (contrato_id, diretoria, fiscal_id, payload_json, status, created_at) 
-              VALUES (?, ?, ?, ?, 'PENDENTE', NOW())";
+// 7. Insere ou Atualiza no coordenador_inbox
+$review_id = isset($_POST['review_id']) ? (int)$_POST['review_id'] : 0;
 
-$stmtIns = $conn->prepare($sqlInsert);
-$stmtIns->bind_param("isis", $contrato_id, $diretoria, $user_id, $payload_json);
-
-if ($stmtIns->execute()) {
-    $request_id = $stmtIns->insert_id;
-    // Redireciona para a página de sucesso mostrando o ID da solicitação
-    header("Location: solicitacao_aprov_sucesso.php?req_id=$request_id");
-    exit;
+if ($review_id > 0) {
+    // ATUALIZAÇÃO (Fluxo de Revisão) - Tira de 'needs_revision' e põe em 'PENDENTE'
+    $sqlUpdate = "UPDATE coordenador_inbox 
+                  SET payload_json = ?, status = 'PENDENTE', created_at = NOW() 
+                  WHERE id = ? AND fiscal_id = ?";
+    $stmtUp = $conn->prepare($sqlUpdate);
+    $stmtUp->bind_param("sii", $payload_json, $review_id, $user_id);
+    
+    if ($stmtUp->execute()) {
+         header("Location: solicitacao_aprov_sucesso.php?req_id=$review_id");
+         exit;
+    } else {
+         echo "Erro ao atualizar solicitação: " . $conn->error;
+    }
 } else {
-    echo "Erro ao salvar solicitação: " . $conn->error;
+    // INSERÇÃO (Fluxo Novo)
+    $sqlInsert = "INSERT INTO coordenador_inbox 
+                  (contrato_id, diretoria, fiscal_id, payload_json, status, created_at) 
+                  VALUES (?, ?, ?, ?, 'PENDENTE', NOW())";
+    $stmtIns = $conn->prepare($sqlInsert);
+    $stmtIns->bind_param("isis", $contrato_id, $diretoria, $user_id, $payload_json);
+
+    if ($stmtIns->execute()) {
+        $request_id = $stmtIns->insert_id;
+        header("Location: solicitacao_aprov_sucesso.php?req_id=$request_id");
+        exit;
+    } else {
+        echo "Erro ao salvar solicitação: " . $conn->error;
+    }
 }
 ?>

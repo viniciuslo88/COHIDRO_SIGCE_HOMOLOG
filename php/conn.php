@@ -6,6 +6,11 @@
 
 mysqli_report(MYSQLI_REPORT_OFF);
 
+// ---- TIMEZONE PHP (America/Sao_Paulo) ----
+if (function_exists('date_default_timezone_set')) {
+    date_default_timezone_set('America/Sao_Paulo'); // UTC-03:00
+}
+
 // ---- localizar .env ----
 $envCandidates = [
     __DIR__ . '/../.env',                       // /php/../.env (raiz do site)
@@ -62,6 +67,12 @@ if ($mysqli->connect_errno) {
 
 // ---- charset ----
 $mysqli->set_charset('utf8mb4');
+
+// ---- TIMEZONE da sessão MySQL (UTC-03:00) ----
+if (!$mysqli->query("SET time_zone = '-03:00'")) {
+    // opcional: logar se der erro, mas não quebrar a aplicação
+    error_log('[MySQL] Não foi possível definir time_zone = -03:00: '.$mysqli->error);
+}
 
 // exporta compatível
 $conn = $mysqli;

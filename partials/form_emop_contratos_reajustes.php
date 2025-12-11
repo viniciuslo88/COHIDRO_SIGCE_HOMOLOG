@@ -57,7 +57,7 @@ if ($__cid > 0) {
 
 <ul id="draft-list-reajustes" class="list-unstyled mb-3"></ul>
 <button type="button" class="btn btn-outline-primary mb-3" data-bs-toggle="modal" data-bs-target="#modalReajuste">
-  + Adicionar Reajuste
+  + Inserir Reajuste
 </button>
 
 <?php if (!empty($__reajustes_salvos)): ?>
@@ -77,13 +77,14 @@ if ($__cid > 0) {
              // created_by vindo da lib (pode ser null em registros antigos)
              $created_by_row = isset($r['created_by']) ? (int)$r['created_by'] : null;
 
-             // regra 24h / dono do registro
+             // regra 24h / dono do registro (lib centralizada)
              $pode_mexer = function_exists('coh_pode_alterar')
                            ? coh_pode_alterar($r['created_at'] ?? null, $tem_permissao_geral, $created_by_row)
                            : false;
 
+             // segundos restantes (apenas para o contador visual)
              $segundos_restantes = 0;
-             if ($pode_mexer && !empty($r['created_at'])) {
+             if (!empty($r['created_at'])) {
                  $criado_em = strtotime($r['created_at']);
                  $segundos_restantes = 86400 - (time() - $criado_em);
                  if ($segundos_restantes < 0) $segundos_restantes = 0;
@@ -115,11 +116,16 @@ if ($__cid > 0) {
                             <i class="bi bi-trash"></i>
                         </button>
                     </div>
-                    <div class="text-danger small fw-bold timer-24h"
-                         data-seconds="<?= (int)$segundos_restantes ?>"
-                         style="font-size: 0.7rem;">
-                        Calculando...
-                    </div>
+
+                    <?php if ($segundos_restantes > 0): ?>
+                        <div class="text-danger small fw-bold timer-24h"
+                             data-seconds="<?= (int)$segundos_restantes ?>"
+                             style="font-size: 0.7rem;">
+                            Calculando...
+                        </div>
+                    <?php else: ?>
+                        <span class="badge text-bg-success">Salvo</span>
+                    <?php endif; ?>
                 <?php else: ?>
                     <span class="badge text-bg-success">Salvo</span>
                 <?php endif; ?>
@@ -170,7 +176,7 @@ if ($__cid > 0) {
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary" onclick="salvarReajusteNoDraft()">Salvar no Rascunho</button>
+      <button type="button" class="btn btn-primary" onclick="salvarReajusteNoDraft()">Inserir à Lista</button>
     </div>
   </div></div>
 </div>
