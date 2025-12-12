@@ -244,70 +244,148 @@ unset($_SESSION['just_logged_in']);
 
       <?php if ($role >= 5): ?>
       <script>
-      async function updateResetBadge(){
-        try{
-          const r = await fetch('/php/notificacoes_reset_count.php', {cache:'no-store', credentials:'same-origin'});
-          const j = await r.json();
-          const n = (j && typeof j.pending === 'number') ? j.pending : 0;
-          const el = document.getElementById('badge-reset-pendentes');
-          if (el){
-            el.textContent = n > 99 ? '99+' : n;
-            el.style.display = (n > 0) ? 'inline-block' : 'none';
-          }
-          return n;
-        }catch(e){ return 0; }
-      }
-      document.addEventListener('DOMContentLoaded', ()=>{
-        updateResetBadge();
-        setInterval(updateResetBadge, 60000);
-      });
-
-      async function loadResetInbox(){
-        const cont = document.getElementById('modalResetContent');
-        cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando...</div>';
-        try{
-          const r = await fetch('/php/reset_admin_inbox.php', {cache:'no-store', headers:{'X-Requested-With':'fetch'}, credentials:'same-origin'});
-          const html = await r.text();
-          cont.innerHTML = html;
-
-          if (!cont.__wired){
-            cont.__wired = true;
-            cont.addEventListener('submit', async (ev)=>{
-              const form = ev.target;
-              if (!form || form.tagName !== 'FORM') return;
-              if (form.getAttribute('data-ajax') !== '1') return;
-              ev.preventDefault();
-              ev.stopPropagation();
-
-              const fd = new FormData(form);
-              if (!fd.has('ajax')) fd.append('ajax','1');
-
-              const btns = form.querySelectorAll('button, input[type="submit"]');
-              btns.forEach(b=> b.disabled = true);
-              try{
-                await fetch(form.action, { method:'POST', body: fd, credentials:'same-origin' });
-                await updateResetBadge();
-                await loadResetInbox();
-              }catch(e){
-                alert('Não foi possível processar a ação. Tente novamente.');
-              }finally{
-                btns.forEach(b=> b.disabled = false);
-              }
-            }, true);
-          }
-        }catch(e){
-          cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar as solicitações.</div>';
+        // ===== BADGES (Reset + Fale Conosco) =====
+        async function getResetCount(){
+          try{
+            const r = await fetch('/php/notificacoes_reset_count.php', {cache:'no-store', credentials:'same-origin'});
+            const j = await r.json();
+            return (j && typeof j.pending === 'number') ? j.pending : 0;
+          }catch(e){ return 0; }
         }
-      }
+        async function getFaleCount(){
+          try{
+            const r = await fetch('/php/gerenciamento_inbox.php?mode=count', {cache:'no-store', credentials:'same-origin'});
+            const j = await r.json();
+            return (j && typeof j.count === 'number') ? j.count : 0;
+          }catch(e){ return 0; }
+        }
+
+        async function updateGerenciamentoBadges(){
+          const [nReset, nFale] = await Promise.all([getResetCount(), getFaleCount()]);
+          const total = (nReset||0) + (nFale||0);
+
+          const elTotal = document.getElementById('badge-ger-total');
+          if (elTotal){
+            elTotal.textContent = total > 99 ? '99+' : total;
+            elTotal.style.display = total > 0 ? 'inline-block' : 'none';
+          }
+
+          const elReset = document.getElementById('badge-ger-reset');
+          if (elReset){
+            elReset.textContent = nReset > 99 ? '99+' : nReset;
+            elReset.style.display = nReset > 0 ? 'inline-block' : 'none';
+          }
+
+          const elFale = document.getElementById('badge-ger-fale');
+          if (elFale){
+            elFale.textContent = nFale > 99 ? '99+' : nFale;
+            elFale.style.display = nFale > 0 ? 'inline-block' : 'none';
+          }
+
+          return {nReset, nFale, total};
+        }
+
+        // ===== LOAD TAB: RESET =====
+        async function loadResetTab(){
+          const cont = document.getElementById('tabResetContent');
+          if (!cont) return;
+
+          cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando resets...</div>';
+          try{
+            const r = await fetch('/php/reset_admin_inbox.php', {
+              cache:'no-store',
+              headers:{'X-Requested-With':'fetch'},
+              credentials:'same-origin'
+            });
+            cont.innerHTML = await r.text();
+          }catch(e){
+            cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar as solicitações de reset.</div>';
+          }
+        }
+
+        // ===== LOAD TAB: FALE CONOSCO =====
+        async function loadFaleTab(){
+          const cont = document.getElementById('tabFaleContent');
+          if (!cont) return;
+
+          cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando mensagens...</div>';
+          try{
+            const r = await fetch('/php/gerenciamento_inbox.php?embed=1', {
+              cache:'no-store',
+              credentials:'same-origin',
+              headers:{'X-Fragment':'1'}
+            });
+            cont.innerHTML = await r.text();
+          }catch(e){
+            cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar mensagens do Fale Conosco.</div>';
+          }
+        }
+
+        // ===== WIRE AJAX SUBMITS dentro do modal (Reset + Fale) =====
+        function wireGerModalAjax(){
+          const modalBody = document.getElementById('modalGerBody');
+          if (!modalBody || modalBody.__wired) return;
+          modalBody.__wired = true;
+
+          modalBody.addEventListener('submit', async (ev)=>{
+            const form = ev.target;
+            if (!form || form.tagName !== 'FORM') return;
+            if (form.getAttribute('data-ajax') !== '1') return;
+
+            ev.preventDefault();
+            ev.stopPropagation();
+
+            const fd = new FormData(form);
+
+            const btns = form.querySelectorAll('button, input[type="submit"]');
+            btns.forEach(b=> b.disabled = true);
+
+            try{
+              await fetch(form.action, { method:'POST', body: fd, credentials:'same-origin' });
+
+              // Recarrega a aba ativa
+              const activeTab = document.querySelector('#gerTabs .nav-link.active')?.getAttribute('data-bs-target') || '#tabReset';
+              if (activeTab === '#tabFale') await loadFaleTab();
+              else await loadResetTab();
+
+              await updateGerenciamentoBadges();
+            }catch(e){
+              alert('Não foi possível processar a ação. Tente novamente.');
+            }finally{
+              btns.forEach(b=> b.disabled = false);
+            }
+          }, true);
+        }
+
+        document.addEventListener('DOMContentLoaded', ()=>{
+          updateGerenciamentoBadges();
+          setInterval(updateGerenciamentoBadges, 60000);
+
+          const modalEl = document.getElementById('modalGerInbox');
+          if (modalEl && window.bootstrap){
+            modalEl.addEventListener('show.bs.modal', async ()=>{
+              wireGerModalAjax();
+              await loadResetTab();
+              await loadFaleTab();
+              await updateGerenciamentoBadges();
+            });
+
+            // quando troca aba, se quiser recarregar “on-demand”:
+            modalEl.addEventListener('shown.bs.tab', async (ev)=>{
+              // opcional: manter como está (já carregamos ao abrir)
+              await updateGerenciamentoBadges();
+            });
+          }
+        });
       </script>
 
-      <button class="btn btn-outline-warning position-relative ms-2" 
-              title="Solicitações de reset de senha"
+      <!-- Botão ÚNICO do Gerenciamento (Reset + Fale Conosco) -->
+      <button class="btn btn-outline-warning position-relative ms-2"
+              title="Inbox do Gerenciamento"
               data-bs-toggle="modal"
-              data-bs-target="#modalResetInbox"
-              onclick="loadResetInbox()">
-        <i class="bi bi-shield-lock"></i>
-        <span id="badge-reset-pendentes" class="badge rounded-pill bg-danger notif-badge" style="display:none;">0</span>
+              data-bs-target="#modalGerInbox">
+        <i class="bi bi-inbox-fill"></i>
+        <span id="badge-ger-total" class="badge rounded-pill bg-danger notif-badge" style="display:none;">0</span>
       </button>
       <?php endif; ?>
 
@@ -367,15 +445,52 @@ if (basename($_SERVER['SCRIPT_NAME']) !== 'index.php') {
 <?php endif; ?>
 
 <?php if ($role >= 5): ?>
-<div class="modal fade" id="modalResetInbox" tabindex="-1" aria-hidden="true">
+<div class="modal fade" id="modalGerInbox" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header bg-warning bg-opacity-25">
-        <h5 class="modal-title"><i class="bi bi-shield-lock me-2"></i>Solicitações de Reset de Senha</h5>
+        <h5 class="modal-title"><i class="bi bi-inbox me-2"></i>Inbox do Gerenciamento</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
       </div>
-      <div class="modal-body p-0" id="modalResetContent" style="min-height:300px;">
-        <div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando...</div>
+
+      <div class="modal-body p-0" id="modalGerBody" style="min-height:300px;">
+        <!-- Tabs -->
+        <ul class="nav nav-tabs px-3 pt-3" id="gerTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="tab-reset-btn" data-bs-toggle="tab" data-bs-target="#tabReset" type="button" role="tab">
+              <i class="bi bi-shield-lock me-1"></i> Reset de Senha
+              <span id="badge-ger-reset" class="badge bg-danger ms-2" style="display:none;">0</span>
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-fale-btn" data-bs-toggle="tab" data-bs-target="#tabFale" type="button" role="tab">
+              <i class="bi bi-chat-dots me-1"></i> Fale Conosco
+              <span id="badge-ger-fale" class="badge bg-danger ms-2" style="display:none;">0</span>
+            </button>
+          </li>
+        </ul>
+
+        <div class="tab-content">
+          <div class="tab-pane fade show active" id="tabReset" role="tabpanel">
+            <div id="tabResetContent">
+              <div class="text-center py-5 text-muted">
+                <div class="spinner-border text-warning" role="status"></div><br>Carregando...
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-pane fade" id="tabFale" role="tabpanel">
+            <div id="tabFaleContent">
+              <div class="text-center py-5 text-muted">
+                <div class="spinner-border text-warning" role="status"></div><br>Carregando...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-primary" data-bs-dismiss="modal">Fechar</button>
       </div>
     </div>
   </div>
