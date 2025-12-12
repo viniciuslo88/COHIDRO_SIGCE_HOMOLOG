@@ -103,7 +103,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
   </head>
   <body>
 
-  <?php if (in_array($currentPage, ['index.php', 'form_contratos.php'], true)) : ?>
+  <?php if (in_array($currentPage, ['index.php', 'form_contratos.php', 'ajuda_faq.php'], true)) : ?>
     <!-- Splash de abertura (apenas index.php e form_contratos.php) -->
     <div id="coh-splash" class="coh-splash">
       <div class="coh-splash-inner">

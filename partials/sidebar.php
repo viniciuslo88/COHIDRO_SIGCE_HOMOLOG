@@ -59,6 +59,23 @@
           <span class="label-text">Informações de Contratos</span>
         </a>
       </li>
+
+      <!-- (aqui você pode adicionar outros itens de menu “normais” se quiser) -->
+
+    </ul>
+  </div>
+
+  <!-- BLOCO FINAL: Ajuda & FAQ sempre no rodapé da sidebar -->
+  <div class="mt-auto pt-3">
+    <hr class="my-2">
+    <ul class="nav nav-pills flex-column gap-1">
+      <li class="nav-item">
+        <a href="/ajuda_faq.php"
+           class="nav-link <?= ($path === '/ajuda_faq.php') ? 'active' : '' ?>">
+          <i class="bi bi-question-circle me-2"></i>
+          <span class="label-text">Ajuda &amp; FAQ</span>
+        </a>
+      </li>
     </ul>
   </div>
 
