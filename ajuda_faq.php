@@ -33,8 +33,8 @@ $roleMap = [
 [$roleLabel, $roleIcon] = $roleMap[$user_level] ?? ['Usuário', 'bi-person'];
 
 // ===== Arquivos de ajuda =====
-$manual_url = '/assets/ajuda/manual_usuario.pdf';
-$fluxo_url  = '/assets/ajuda/fluxograma_aprovacao.pdf';
+$manual_url = '/assets/ajuda/Manual_do_Usuario_SIGCE.pdf';
+$fluxo_url  = '/assets/ajuda/Fluxograma_SIGCE.pdf';
 
 $manual_fs = __DIR__ . $manual_url;
 $fluxo_fs  = __DIR__ . $fluxo_url;
