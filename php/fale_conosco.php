@@ -1,13 +1,10 @@
 <?php
 // /php/fale_conosco.php — Endpoint do "Fale Conosco" (usuário -> Inbox do Gerenciamento)
+// Responde SEMPRE JSON (sem redirects/HTML), para não quebrar o fetch.
 
-// Evita quebrar JSON com warnings/notices/HTML acidental
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 error_reporting(E_ALL);
-
-// Captura qualquer output indevido de includes/echo/warnings
-if (!ob_get_level()) { ob_start(); }
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -15,13 +12,11 @@ header('X-Content-Type-Options: nosniff');
 if (session_status() === PHP_SESSION_NONE) { session_start(); }
 date_default_timezone_set('America/Sao_Paulo');
 
-// IMPORTANTE: não inclua require_auth/session_guard aqui (podem gerar HTML/redirect e quebrar o JSON)
 require_once __DIR__ . '/conn.php'; // $conn (mysqli)
 
 function j(bool $ok, array $extra = [], int $http = 200): void {
-  // limpa qualquer lixo que tenha sido impresso antes (HTML/warnings)
+  // limpa qualquer saída acidental (warnings, espaços, etc.)
   while (ob_get_level() > 0) { @ob_end_clean(); }
-
   http_response_code($http);
   echo json_encode(
     array_merge(['ok' => $ok], $extra),
@@ -31,14 +26,14 @@ function j(bool $ok, array $extra = [], int $http = 200): void {
 }
 
 if (strtoupper($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-  j(false, ['error' => 'method_not_allowed', 'message' => 'Método não permitido.'], 405);
+  j(false, ['error' => 'method_not_allowed', 'message' => 'Use POST.'], 405);
 }
 
-// ===== Sessão / identidade =====
-$user_id   = (int)($_SESSION['user_id'] ?? 0);
-$cpf       = (string)($_SESSION['cpf'] ?? '');
-$nome      = (string)($_SESSION['nome'] ?? $_SESSION['user_name'] ?? $_SESSION['usuario_nome'] ?? '');
-$role      = (int)($_SESSION['access_level'] ?? $_SESSION['nivel'] ?? $_SESSION['user_level'] ?? $_SESSION['role'] ?? 0);
+// ===== Sessão / identidade (SEM redirects) =====
+$user_id = (int)($_SESSION['user_id'] ?? 0);
+$cpf     = (string)($_SESSION['cpf'] ?? '');
+$nome    = (string)($_SESSION['nome'] ?? $_SESSION['user_name'] ?? $_SESSION['usuario_nome'] ?? '');
+$role    = (int)($_SESSION['role'] ?? $_SESSION['access_level'] ?? $_SESSION['nivel'] ?? $_SESSION['user_level'] ?? 0);
 $diretoria = (string)($_SESSION['diretoria'] ?? $_SESSION['Diretoria'] ?? '');
 
 if ($user_id <= 0 && $cpf === '') {
@@ -60,17 +55,6 @@ $pagina          = trim((string)($_POST['pagina'] ?? ($_SERVER['HTTP_REFERER'] ?
 $validCats = ['DUVIDA','SOLICITACAO','ERRO','SUGESTAO','ACESSO','OUTROS'];
 if (!in_array($categoria, $validCats, true)) $categoria = 'DUVIDA';
 
-// ===== Helpers MB fallback =====
-if (!function_exists('mb_strlen')) {
-  function mb_strlen($s, $enc=null){ return strlen((string)$s); }
-}
-if (!function_exists('mb_substr')) {
-  function mb_substr($s, $start, $len=null, $enc=null){
-    $s = (string)$s;
-    return ($len === null) ? substr($s, $start) : substr($s, $start, $len);
-  }
-}
-
 // ===== Validações =====
 if (mb_strlen($assunto, 'UTF-8') < 3) {
   j(false, ['error'=>'assunto', 'message'=>'Informe um assunto (mín. 3 caracteres).'], 422);
@@ -86,8 +70,7 @@ $pagina = mb_substr($pagina, 0, 255, 'UTF-8');
 
 // ===== Anti-spam 30s (por user_id) =====
 if ($user_id > 0) {
-  $st = $conn->prepare("SELECT created_at FROM gerenciamento_mensagens WHERE user_id=? ORDER BY created_at DESC LIMIT 1");
-  if ($st) {
+  if ($st = $conn->prepare("SELECT created_at FROM gerenciamento_mensagens WHERE user_id=? ORDER BY created_at DESC LIMIT 1")) {
     $st->bind_param("i", $user_id);
     $st->execute();
     $rs = $st->get_result();
@@ -119,17 +102,17 @@ $ins = $conn->prepare($sql);
 if (!$ins) {
   j(false, [
     'error' => 'prepare_failed',
-    'message' => 'Falha ao preparar INSERT. Verifique se a tabela gerenciamento_mensagens existe e se os campos batem.',
+    'message' => 'Falha ao preparar INSERT. Verifique se a tabela gerenciamento_mensagens existe.',
     'mysql' => $conn->error
   ], 500);
 }
 
-/**
- * 13 params: i s s i s s s s i s s s s  => "ississssissss"
- */
+// 13 params:
 $types = "ississssissss";
 
-$cid = ($contrato_id === null) ? 0 : (int)$contrato_id; // mantém compatível com bind_param("i")
+// Se vier vazio, grava NULL no banco (melhor que 0)
+$cid = $contrato_id; // int|null
+
 $ins->bind_param(
   $types,
   $user_id,
@@ -148,16 +131,12 @@ $ins->bind_param(
 );
 
 $ok = $ins->execute();
-$new_id = (int)$conn->insert_id;
 $err = $ins->error;
+$new_id = (int)$conn->insert_id;
 $ins->close();
 
 if (!$ok) {
-  j(false, [
-    'error'=>'insert_failed',
-    'message'=>'Não foi possível registrar sua mensagem.',
-    'mysql'=>$err
-  ], 500);
+  j(false, ['error'=>'insert_failed', 'message'=>'Não foi possível registrar sua mensagem.', 'mysql'=>$err], 500);
 }
 
-j(true, ['id'=>$new_id, 'status'=>'open', 'message'=>'Mensagem enviada ao Gerenciamento. Obrigado!'], 200);
+j(true, ['id'=>$new_id, 'status'=>'open', 'message'=>'Mensagem enviada ao Gerenciamento.'], 200);

@@ -1,5 +1,6 @@
 <?php
-// /php/gerenciamento_inbox.php — Inbox do Gerenciamento (nível 5)
+// /php/gerenciamento_inbox.php — Inbox do Gerenciamento (nível 5) + status/resposta para usuários
+// Embed (modal): mostra SOMENTE 5 pendências (open/in_progress) + link para histórico.
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -10,7 +11,7 @@ date_default_timezone_set('America/Sao_Paulo');
 
 require_once __DIR__ . '/require_auth.php';
 require_once __DIR__ . '/session_guard.php';
-require_once __DIR__ . '/conn.php'; // $conn
+require_once __DIR__ . '/conn.php'; // $conn (mysqli)
 
 function j(bool $ok, array $extra = [], int $http = 200): void {
   while (ob_get_level() > 0) { @ob_end_clean(); }
@@ -22,7 +23,22 @@ function j(bool $ok, array $extra = [], int $http = 200): void {
 }
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
-$role    = (int)($_SESSION['role'] ?? $_SESSION['access_level'] ?? $_SESSION['nivel'] ?? 0);
+// Fallback MB
+function coh_strlen(string $s): int {
+  return function_exists('mb_strlen') ? mb_strlen($s, 'UTF-8') : strlen($s);
+}
+function coh_substr(string $s, int $start, int $len): string {
+  return function_exists('mb_substr') ? mb_substr($s, $start, $len, 'UTF-8') : substr($s, $start, $len);
+}
+function coh_status_badge(string $status): string {
+  $status = $status ?: 'open';
+  if ($status === 'answered')    return '<span class="badge bg-success">Respondida</span>';
+  if ($status === 'in_progress') return '<span class="badge bg-warning text-dark">Em análise</span>';
+  if ($status === 'closed')      return '<span class="badge bg-dark">Encerrada</span>';
+  return '<span class="badge bg-secondary">Aberta</span>';
+}
+
+$role    = (int)($_SESSION['role'] ?? $_SESSION['access_level'] ?? $_SESSION['nivel'] ?? $_SESSION['user_level'] ?? 0);
 $user_id = (int)($_SESSION['user_id'] ?? 0);
 $cpf     = (string)($_SESSION['cpf'] ?? '');
 
@@ -30,12 +46,12 @@ $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 $mode   = (string)($_GET['mode'] ?? '');
 $embed  = (int)($_GET['embed'] ?? 0);
 
-// ===== COUNT (badge) — apenas nível 5
+// ===== COUNT (badge) — apenas nível 5 =====
 if ($mode === 'count') {
-  if ($role < 5) j(false, ['count'=>0], 200);
+  if ($role < 5) j(true, ['count'=>0], 200);
 
-  $st = $conn->prepare("SELECT COUNT(*) c FROM gerenciamento_mensagens WHERE status IN ('open','in_progress')");
   $n = 0;
+  $st = $conn->prepare("SELECT COUNT(*) c FROM gerenciamento_mensagens WHERE status IN ('open','in_progress')");
   if ($st) {
     $st->execute();
     $rs = $st->get_result();
@@ -45,19 +61,33 @@ if ($mode === 'count') {
   j(true, ['count'=>$n], 200);
 }
 
-// ===== MY (para o usuário ver status/resposta)
+// ===== MY (usuário vê status/resposta) =====
 if ($mode === 'my') {
   if ($user_id <= 0 && $cpf === '') j(true, ['items'=>[]], 200);
 
+  $items = [];
+  $st = null;
+
   if ($user_id > 0) {
-    $st = $conn->prepare("SELECT id, assunto, mensagem, status, resposta, created_at FROM gerenciamento_mensagens WHERE user_id=? ORDER BY id DESC LIMIT 10");
-    $st->bind_param("i", $user_id);
+    $st = $conn->prepare("
+      SELECT id, assunto, mensagem, status, resposta, created_at, updated_at
+      FROM gerenciamento_mensagens
+      WHERE user_id=?
+      ORDER BY id DESC
+      LIMIT 10
+    ");
+    if ($st) $st->bind_param("i", $user_id);
   } else {
-    $st = $conn->prepare("SELECT id, assunto, mensagem, status, resposta, created_at FROM gerenciamento_mensagens WHERE cpf=? ORDER BY id DESC LIMIT 10");
-    $st->bind_param("s", $cpf);
+    $st = $conn->prepare("
+      SELECT id, assunto, mensagem, status, resposta, created_at, updated_at
+      FROM gerenciamento_mensagens
+      WHERE cpf=?
+      ORDER BY id DESC
+      LIMIT 10
+    ");
+    if ($st) $st->bind_param("s", $cpf);
   }
 
-  $items = [];
   if ($st) {
     $st->execute();
     $rs = $st->get_result();
@@ -68,16 +98,16 @@ if ($mode === 'my') {
   j(true, ['items'=>$items], 200);
 }
 
-// ===== AÇÕES (POST) — somente nível 5
+// ===== AÇÕES (POST) — somente nível 5 =====
 if ($method === 'POST') {
   if ($role < 5) j(false, ['message'=>'Sem permissão.'], 403);
 
-  $action = (string)($_POST['action'] ?? '');
+  // aceita "op" (seu JS atual) e "action" (fallback)
+  $action = (string)($_POST['op'] ?? $_POST['action'] ?? '');
   $id     = (int)($_POST['id'] ?? 0);
   if ($id <= 0) j(false, ['message'=>'ID inválido.'], 422);
 
   if ($action === 'set_status') {
-    // botão "Em análise"
     $newStatus = (string)($_POST['status'] ?? 'in_progress');
     if (!in_array($newStatus, ['open','in_progress','answered','closed'], true)) $newStatus = 'in_progress';
 
@@ -87,11 +117,12 @@ if ($method === 'POST') {
           handled_by=?,
           handled_at=IFNULL(handled_at, NOW())
       WHERE id=?
+      LIMIT 1
     ");
     if (!$st) j(false, ['message'=>'Falha ao preparar UPDATE.', 'mysql'=>$conn->error], 500);
 
     $st->bind_param("sii", $newStatus, $user_id, $id);
-    $ok = $st->execute();
+    $ok  = $st->execute();
     $err = $st->error;
     $st->close();
 
@@ -101,8 +132,8 @@ if ($method === 'POST') {
 
   if ($action === 'reply') {
     $resp = trim((string)($_POST['resposta'] ?? ''));
-    if (mb_strlen($resp, 'UTF-8') < 3) j(false, ['message'=>'Informe uma resposta (mín. 3 caracteres).'], 422);
-    $resp = mb_substr($resp, 0, 8000, 'UTF-8');
+    if (coh_strlen($resp) < 3) j(false, ['message'=>'Informe uma resposta (mín. 3 caracteres).'], 422);
+    $resp = coh_substr($resp, 0, 8000);
 
     $st = $conn->prepare("
       UPDATE gerenciamento_mensagens
@@ -111,45 +142,59 @@ if ($method === 'POST') {
           handled_by=?,
           handled_at=NOW()
       WHERE id=?
+      LIMIT 1
     ");
     if (!$st) j(false, ['message'=>'Falha ao preparar UPDATE.', 'mysql'=>$conn->error], 500);
 
     $st->bind_param("sii", $resp, $user_id, $id);
-    $ok = $st->execute();
+    $ok  = $st->execute();
     $err = $st->error;
+    $aff = $st->affected_rows;
     $st->close();
 
     if (!$ok) j(false, ['message'=>'Não foi possível salvar a resposta.', 'mysql'=>$err], 500);
-    j(true, ['message'=>'Resposta enviada ao usuário.'], 200);
+    if ($aff === 0) j(false, ['message'=>'Nenhuma linha atualizada (ID inválido ou resposta idêntica).'], 404);
+
+    j(true, ['message'=>'Resposta registrada. O usuário verá em “Minhas mensagens”.'], 200);
   }
 
   j(false, ['message'=>'Ação inválida.'], 422);
 }
 
-// ===== HTML EMBED (modal) — gerenciamento
+// ===== HTML EMBED (modal) — gerenciamento =====
 if ($embed === 1) {
   if ($role < 5) { echo '<div class="p-3"><div class="alert alert-danger mb-0">Sem permissão.</div></div>'; exit; }
 
+  // SOMENTE 5 pendências
+  $rows = [];
   $rs = $conn->query("
     SELECT id, created_at, categoria, assunto, mensagem,
            contrato_id, numero_contrato, nome, cpf, diretoria, role,
            status, resposta
     FROM gerenciamento_mensagens
+    WHERE status IN ('open','in_progress')
     ORDER BY created_at DESC
-    LIMIT 200
+    LIMIT 5
   ");
-  $rows = [];
   if ($rs) { while ($r = $rs->fetch_assoc()) $rows[] = $r; $rs->free(); }
 
   ?>
   <div class="p-3">
     <div class="d-flex align-items-center justify-content-between mb-2">
       <div class="fw-semibold"><i class="bi bi-chat-dots me-2"></i>Mensagens do Fale Conosco</div>
-      <div class="small text-muted">Mostrando até 200 itens</div>
+      <div class="d-flex gap-2">
+        <a class="btn btn-sm btn-outline-secondary" href="/php/historico_gerenciamento.php" target="_blank" rel="noopener">
+          <i class="bi bi-clock-history me-1"></i>Ver histórico
+        </a>
+      </div>
+    </div>
+
+    <div class="small text-muted mb-2">
+      Mostrando <b>somente as 5 pendências</b> (Aberta / Em análise). As demais ficam no Histórico.
     </div>
 
     <?php if (!$rows): ?>
-      <div class="alert alert-secondary mb-0">Nenhuma mensagem.</div>
+      <div class="alert alert-success mb-0">Nenhuma pendência no momento.</div>
     <?php else: ?>
       <div class="table-responsive">
         <table class="table table-sm table-hover align-middle">
@@ -168,11 +213,7 @@ if ($embed === 1) {
             <?php foreach ($rows as $r):
               $id = (int)$r['id'];
               $status = (string)($r['status'] ?? 'open');
-
-              if ($status === 'answered') $badge = '<span class="badge bg-success">Respondida</span>';
-              else if ($status === 'in_progress') $badge = '<span class="badge bg-warning text-dark">Em análise</span>';
-              else if ($status === 'closed') $badge = '<span class="badge bg-dark">Encerrada</span>';
-              else $badge = '<span class="badge bg-secondary">Aberta</span>';
+              $badge = coh_status_badge($status);
             ?>
               <tr>
                 <td class="text-muted small"><?=h($r['created_at'] ?? '')?></td>
@@ -204,7 +245,7 @@ if ($embed === 1) {
                 <td>
                   <div class="d-flex gap-2 flex-wrap">
                     <form method="post" action="/php/gerenciamento_inbox.php" data-ajax="1" class="m-0">
-                      <input type="hidden" name="action" value="set_status">
+                      <input type="hidden" name="op" value="set_status">
                       <input type="hidden" name="id" value="<?= $id ?>">
                       <input type="hidden" name="status" value="in_progress">
                       <button type="submit" class="btn btn-sm btn-outline-warning">
@@ -220,7 +261,7 @@ if ($embed === 1) {
 
                   <div class="collapse mt-2" id="reply<?= $id ?>">
                     <form method="post" action="/php/gerenciamento_inbox.php" data-ajax="1">
-                      <input type="hidden" name="action" value="reply">
+                      <input type="hidden" name="op" value="reply">
                       <input type="hidden" name="id" value="<?= $id ?>">
                       <textarea class="form-control form-control-sm" name="resposta" rows="3" placeholder="Digite a resposta ao usuário..." required></textarea>
                       <div class="d-flex justify-content-end mt-2">

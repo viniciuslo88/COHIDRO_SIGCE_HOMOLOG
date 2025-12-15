@@ -5,7 +5,6 @@ $nome   = $_SESSION['nome']   ?? null;
 $role   = (int)($_SESSION['role'] ?? 0);
 $dir    = $_SESSION['diretoria'] ?? '-';
 
-// auto-open apenas no primeiro carregamento após login
 $just_logged_in = (int)($_SESSION['just_logged_in'] ?? 0);
 unset($_SESSION['just_logged_in']);
 ?>
@@ -20,24 +19,7 @@ unset($_SESSION['just_logged_in']);
       <style>.notif-badge{position:absolute; top:-6px; right:-6px;}</style>
 
       <script>
-        // contador unificado (usa o endpoint do coordenador)
-        async function loadCoordinatorCount(){
-          try{
-            const r = await fetch('/php/coordenador_inbox.php?mode=count', {cache:'no-store'});
-            const j = await r.json();
-            const n = (j && typeof j.count==='number') ? j.count : 0;
-            const el = document.querySelector('#notifBadge'); // se existir
-            if (el){
-              el.textContent = n;
-              el.classList.toggle('d-none', n<=0);
-            }
-          }catch(e){}
-        }
-        document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) loadCoordinatorCount(); });
-        loadCoordinatorCount();
-        setInterval(loadCoordinatorCount, 30000);
-
-        // Fallback de toggle (caso o JS externo ainda não tenha sido carregado)
+        // Fallback toggle "Ver alterações" (mantido)
         if (!window.__cohToggleAlteracoes) {
           window.__cohToggleAlteracoes = function(btn){
             let sel = btn.getAttribute('data-target');
@@ -67,7 +49,7 @@ unset($_SESSION['just_logged_in']);
         }
       </script>
 
-      <?php if ($role === 1): /* ===== Botão + JS do FISCAL (apenas nível 1) ===== */ ?>
+      <?php if ($role === 1): ?>
         <script>
           async function updateFiscalBadge(){
             try{
@@ -87,7 +69,6 @@ unset($_SESSION['just_logged_in']);
             updateFiscalBadge();
             setInterval(updateFiscalBadge, 30000);
 
-            // Carrega conteúdo quando o modal abrir
             const modalEl = document.getElementById('fiscalInboxModal');
             if (modalEl && window.bootstrap){
               modalEl.addEventListener('show.bs.modal', ()=>{
@@ -95,12 +76,10 @@ unset($_SESSION['just_logged_in']);
                 if (!body) return;
                 body.innerHTML = '<div class="text-center text-muted py-4"><div class="spinner-border" role="status"></div><div class="mt-2">Carregando…</div></div>';
                 fetch('/php/fiscal_inbox.php?embed=1', { cache:'no-store', credentials:'same-origin', headers:{'X-Fragment':'1'} })
-                  .then(r => r.text())
-                  .then(html => { body.innerHTML = html; })
+                  .then(r => r.text()).then(html => { body.innerHTML = html; })
                   .catch(() => { body.innerHTML = '<div class="alert alert-danger">Falha ao carregar.</div>'; });
               });
 
-              // Delegação de 'Ver alterações' também aqui (fallback)
               modalEl.addEventListener('click', function(ev){
                 const btn = ev.target.closest('.js-ver-alteracoes');
                 if (!btn) return;
@@ -111,7 +90,6 @@ unset($_SESSION['just_logged_in']);
           });
         </script>
 
-        <!-- Botão do Fiscal -->
         <button class="btn btn-outline-warning position-relative ms-2"
                 title="Pendências do Fiscal"
                 data-bs-toggle="modal"
@@ -120,17 +98,14 @@ unset($_SESSION['just_logged_in']);
           <span id="fiscalBadge" class="badge rounded-pill bg-danger notif-badge" style="display:none;"></span>
         </button>
       <?php endif; ?>
-      <!-- ===== /Botão Fiscal ===== -->
 
-      <?php if ($role >= 2): /* ===== Coordenador / Nível 2+ ===== */ ?>
+      <?php if ($role >= 2): ?>
       <script>
         const JUST_LOGGED_IN = <?= $just_logged_in ? 'true' : 'false' ?>;
 
         async function updateCoordinatorBadge(){
           try{
-            const r = await fetch('/php/coordenador_inbox.php?mode=count', {
-              cache:'no-store', credentials:'same-origin'
-            });
+            const r = await fetch('/php/coordenador_inbox.php?mode=count', { cache:'no-store', credentials:'same-origin' });
             if(!r.ok){ throw new Error('HTTP '+r.status); }
             const j = await r.json();
             const n = (j && typeof j.count === 'number') ? j.count : 0;
@@ -146,18 +121,14 @@ unset($_SESSION['just_logged_in']);
           }
         }
 
-        // Carrega a inbox do coordenador no modal (fragmento)
         async function loadCoordinatorModal(){
           const body = document.getElementById('coordenadorInboxBody');
           body.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border" role="status"></div><br>Carregando...</div>';
           try{
-            const r = await fetch('/php/coordenador_inbox.php?embed=1', {
-              cache:'no-store', credentials:'same-origin', headers:{'X-Fragment':'1'}
-            });
+            const r = await fetch('/php/coordenador_inbox.php?embed=1', { cache:'no-store', credentials:'same-origin', headers:{'X-Fragment':'1'} });
             const html = await r.text();
             body.innerHTML = html;
 
-            // Delegação: Ver alterações (usa classe .js-ver-alteracoes)
             body.addEventListener('click', (ev) => {
               const btn = ev.target.closest('.js-ver-alteracoes');
               if(!btn) return;
@@ -165,7 +136,6 @@ unset($_SESSION['just_logged_in']);
               if (window.__cohToggleAlteracoes) window.__cohToggleAlteracoes(btn);
             });
 
-            // (restante — aprovar/rejeitar — mantido)
             body.addEventListener('click', async (ev) => {
               const approveBtn = ev.target.closest('.js-approve');
               if (approveBtn) {
@@ -173,10 +143,8 @@ unset($_SESSION['just_logged_in']);
                   const id = approveBtn.getAttribute('data-id');
                   const fd = new URLSearchParams(); fd.append('id', id);
                   const rr = await fetch('/php/coordenador_aprovar.php', { method:'POST', body: fd, credentials:'same-origin' });
-                  let ok=false,msg='OK'; try{ const j=await rr.json(); ok=!!j.ok; msg=j.error||'OK'; }catch(_){}
                   await loadCoordinatorModal(); await updateCoordinatorBadge();
-                  alerta(body, ok ? 'Operação concluída.' : ('Falha: '+msg), ok);
-                } catch(e) { alerta(body, 'Erro ao aprovar.', false); }
+                } catch(e) {}
                 return;
               }
               const rejectBtn = ev.target.closest('.js-reject');
@@ -185,10 +153,8 @@ unset($_SESSION['just_logged_in']);
                   const id = rejectBtn.getAttribute('data-id');
                   const fd = new URLSearchParams(); fd.append('id', id);
                   const rr = await fetch('/php/coordenador_rejeitar.php', { method:'POST', body: fd, credentials:'same-origin' });
-                  let ok=false,msg='OK'; try{ const j=await rr.json(); ok=!!j.ok; msg=j.error||'OK'; }catch(_){}
                   await loadCoordinatorModal(); await updateCoordinatorBadge();
-                  alerta(body, ok ? 'Operação concluída.' : ('Falha: '+msg), ok);
-                } catch(e) { alerta(body, 'Erro ao rejeitar.', false); }
+                } catch(e) {}
               }
             });
 
@@ -197,33 +163,19 @@ unset($_SESSION['just_logged_in']);
           }
         }
 
-        function alerta(scope, text, ok){
-          const div = document.createElement('div');
-          div.className = `alert ${ok?'alert-success':'alert-danger'} my-2`;
-          div.textContent = text;
-          scope.prepend(div);
-          setTimeout(()=>div.remove(), 2500);
-        }
-
         document.addEventListener('DOMContentLoaded', async ()=>{
           updateCoordinatorBadge();
           setInterval(updateCoordinatorBadge, 60000);
 
-          const btn = document.getElementById('btnCoordInbox');
-          if (btn){ btn.addEventListener('click', loadCoordinatorModal); }
-
           const modalEl = document.getElementById('coordenadorInboxModal');
           if (modalEl && typeof bootstrap !== 'undefined') {
-            modalEl.addEventListener('show.bs.modal', () => {
-              try { loadCoordinatorModal(); } catch (e) {}
-            });
+            modalEl.addEventListener('show.bs.modal', () => { try { loadCoordinatorModal(); } catch (e) {} });
           }
 
           if (JUST_LOGGED_IN) {
             const pend = await updateCoordinatorBadge();
             if (pend > 0) {
               await loadCoordinatorModal();
-              const modalEl = document.getElementById('coordenadorInboxModal');
               if (modalEl && typeof bootstrap !== 'undefined') {
                 bootstrap.Modal.getOrCreateInstance(modalEl).show();
               }
@@ -233,7 +185,6 @@ unset($_SESSION['just_logged_in']);
       </script>
 
       <button class="btn btn-outline-primary position-relative ms-2"
-              id="btnCoordInbox"
               title="Solicitações de alteração de contratos"
               data-bs-toggle="modal"
               data-bs-target="#coordenadorInboxModal">
@@ -244,117 +195,67 @@ unset($_SESSION['just_logged_in']);
 
       <?php if ($role >= 5): ?>
       <script>
-        // ===== BADGES (Reset + Fale Conosco) =====
-        async function getResetCount(){
-          try{
-            const r = await fetch('/php/notificacoes_reset_count.php', {cache:'no-store', credentials:'same-origin'});
-            const j = await r.json();
-            return (j && typeof j.pending === 'number') ? j.pending : 0;
-          }catch(e){ return 0; }
-        }
-        async function getFaleCount(){
-          try{
-            const r = await fetch('/php/gerenciamento_inbox.php?mode=count', {cache:'no-store', credentials:'same-origin'});
-            const j = await r.json();
-            return (j && typeof j.count === 'number') ? j.count : 0;
-          }catch(e){ return 0; }
+        async function fetchJSON(url){
+          const r = await fetch(url, {cache:'no-store', credentials:'same-origin'});
+          let j=null; try{ j = await r.json(); }catch(e){}
+          return { ok: r.ok, status: r.status, json: j };
         }
 
         async function updateGerenciamentoBadges(){
-          const [nReset, nFale] = await Promise.all([getResetCount(), getFaleCount()]);
-          const total = (nReset||0) + (nFale||0);
-
-          const elTotal = document.getElementById('badge-ger-total');
-          if (elTotal){
-            elTotal.textContent = total > 99 ? '99+' : total;
-            elTotal.style.display = total > 0 ? 'inline-block' : 'none';
-          }
-
-          const elReset = document.getElementById('badge-ger-reset');
-          if (elReset){
-            elReset.textContent = nReset > 99 ? '99+' : nReset;
-            elReset.style.display = nReset > 0 ? 'inline-block' : 'none';
-          }
-
-          const elFale = document.getElementById('badge-ger-fale');
-          if (elFale){
-            elFale.textContent = nFale > 99 ? '99+' : nFale;
-            elFale.style.display = nFale > 0 ? 'inline-block' : 'none';
-          }
-
-          return {nReset, nFale, total};
-        }
-
-        // ===== LOAD TAB: RESET =====
-        async function loadResetTab(){
-          const cont = document.getElementById('tabResetContent');
-          if (!cont) return;
-
-          cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando resets...</div>';
           try{
-            const r = await fetch('/php/reset_admin_inbox.php', {
-              cache:'no-store',
-              headers:{'X-Requested-With':'fetch'},
-              credentials:'same-origin'
-            });
-            cont.innerHTML = await r.text();
-          }catch(e){
-            cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar as solicitações de reset.</div>';
-          }
-        }
+            const a = await fetchJSON('/php/notificacoes_reset_count.php');
+            const b = await fetchJSON('/php/gerenciamento_inbox.php?mode=count');
 
-        // ===== LOAD TAB: FALE CONOSCO =====
-        async function loadFaleTab(){
-          const cont = document.getElementById('tabFaleContent');
-          if (!cont) return;
+            const resetN = (a.json && typeof a.json.pending === 'number') ? a.json.pending : 0;
+            const faleN  = (b.json && typeof b.json.count === 'number') ? b.json.count : 0;
+            const total  = resetN + faleN;
 
-          cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando mensagens...</div>';
-          try{
-            const r = await fetch('/php/gerenciamento_inbox.php?embed=1', {
-              cache:'no-store',
-              credentials:'same-origin',
-              headers:{'X-Fragment':'1'}
-            });
-            cont.innerHTML = await r.text();
-          }catch(e){
-            cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar mensagens do Fale Conosco.</div>';
-          }
-        }
-
-        // ===== WIRE AJAX SUBMITS dentro do modal (Reset + Fale) =====
-        function wireGerModalAjax(){
-          const modalBody = document.getElementById('modalGerBody');
-          if (!modalBody || modalBody.__wired) return;
-          modalBody.__wired = true;
-
-          modalBody.addEventListener('submit', async (ev)=>{
-            const form = ev.target;
-            if (!form || form.tagName !== 'FORM') return;
-            if (form.getAttribute('data-ajax') !== '1') return;
-
-            ev.preventDefault();
-            ev.stopPropagation();
-
-            const fd = new FormData(form);
-
-            const btns = form.querySelectorAll('button, input[type="submit"]');
-            btns.forEach(b=> b.disabled = true);
-
-            try{
-              await fetch(form.action, { method:'POST', body: fd, credentials:'same-origin' });
-
-              // Recarrega a aba ativa
-              const activeTab = document.querySelector('#gerTabs .nav-link.active')?.getAttribute('data-bs-target') || '#tabReset';
-              if (activeTab === '#tabFale') await loadFaleTab();
-              else await loadResetTab();
-
-              await updateGerenciamentoBadges();
-            }catch(e){
-              alert('Não foi possível processar a ação. Tente novamente.');
-            }finally{
-              btns.forEach(b=> b.disabled = false);
+            const el = document.getElementById('badge-ger-total');
+            if (el){
+              el.textContent = total > 99 ? '99+' : total;
+              el.style.display = total > 0 ? 'inline-block' : 'none';
             }
-          }, true);
+            const tabFale = document.getElementById('badge-ger-fale');
+            if (tabFale){
+              tabFale.textContent = faleN > 99 ? '99+' : faleN;
+              tabFale.style.display = faleN > 0 ? 'inline-block' : 'none';
+            }
+            const tabReset = document.getElementById('badge-ger-reset');
+            if (tabReset){
+              tabReset.textContent = resetN > 99 ? '99+' : resetN;
+              tabReset.style.display = resetN > 0 ? 'inline-block' : 'none';
+            }
+          }catch(e){}
+        }
+
+        async function loadResetTab(){
+          const cont = document.getElementById('gerTabResetContent');
+          cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando...</div>';
+          try{
+            const r = await fetch('/php/reset_admin_inbox.php?embed=1', {cache:'no-store', credentials:'same-origin', headers:{'X-Requested-With':'fetch'}});
+            cont.innerHTML = await r.text();
+          }catch(e){
+            cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar resets.</div>';
+          }
+        }
+
+        async function loadFaleTab(){
+          const cont = document.getElementById('gerTabFaleContent');
+          cont.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border" role="status"></div><br>Carregando...</div>';
+          try{
+            const r = await fetch('/php/gerenciamento_inbox.php?embed=1', {cache:'no-store', credentials:'same-origin', headers:{'X-Requested-With':'fetch'}});
+            cont.innerHTML = await r.text();
+          }catch(e){
+            cont.innerHTML = '<div class="alert alert-danger m-3">Falha ao carregar Fale Conosco.</div>';
+          }
+        }
+
+        async function openGerInbox(){
+          await updateGerenciamentoBadges();
+          // carrega tab ativa
+          const active = document.querySelector('#gerTabs .nav-link.active')?.getAttribute('data-bs-target') || '#tabGerReset';
+          if (active === '#tabGerFale') await loadFaleTab();
+          else await loadResetTab();
         }
 
         document.addEventListener('DOMContentLoaded', ()=>{
@@ -363,39 +264,69 @@ unset($_SESSION['just_logged_in']);
 
           const modalEl = document.getElementById('modalGerInbox');
           if (modalEl && window.bootstrap){
-            modalEl.addEventListener('show.bs.modal', async ()=>{
-              wireGerModalAjax();
-              await loadResetTab();
-              await loadFaleTab();
-              await updateGerenciamentoBadges();
+            modalEl.addEventListener('show.bs.modal', ()=>{ openGerInbox(); });
+
+            // troca de abas
+            modalEl.addEventListener('shown.bs.tab', async (ev)=>{
+              const target = ev.target?.getAttribute('data-bs-target');
+              if (target === '#tabGerFale') await loadFaleTab();
+              else await loadResetTab();
             });
 
-            // quando troca aba, se quiser recarregar “on-demand”:
-            modalEl.addEventListener('shown.bs.tab', async (ev)=>{
-              // opcional: manter como está (já carregamos ao abrir)
-              await updateGerenciamentoBadges();
-            });
+            // handler AJAX (Resets + Fale)
+            modalEl.addEventListener('submit', async (ev)=>{
+              const form = ev.target;
+              if (!form || form.tagName !== 'FORM') return;
+              if (form.getAttribute('data-ajax') !== '1') return;
+
+              ev.preventDefault();
+              ev.stopPropagation();
+
+              const fd = new FormData(form);
+              if (!fd.has('ajax')) fd.append('ajax','1');
+
+              const btns = form.querySelectorAll('button, input[type="submit"]');
+              btns.forEach(b=> b.disabled = true);
+
+              try{
+                const rr = await fetch(form.action, { method:'POST', body: fd, credentials:'same-origin' });
+
+                // tenta ler json pra debug/feedback
+                let jj=null; try{ jj = await rr.json(); }catch(e){}
+
+                if (!rr.ok){
+                  const msg = (jj && (jj.message || jj.error)) ? (jj.message || jj.error) : ('HTTP '+rr.status);
+                  alert('Falha ao processar ('+msg+').');
+                }
+
+                // recarrega aba ativa
+                const activeTab = document.querySelector('#gerTabs .nav-link.active')?.getAttribute('data-bs-target') || '#tabGerReset';
+                if (activeTab === '#tabGerFale') await loadFaleTab();
+                else await loadResetTab();
+
+                await updateGerenciamentoBadges();
+              }catch(e){
+                alert('Não foi possível processar a ação. Tente novamente.');
+              }finally{
+                btns.forEach(b=> b.disabled = false);
+              }
+            }, true);
           }
         });
       </script>
 
-      <!-- Botão ÚNICO do Gerenciamento (Reset + Fale Conosco) -->
       <button class="btn btn-outline-warning position-relative ms-2"
               title="Inbox do Gerenciamento"
               data-bs-toggle="modal"
               data-bs-target="#modalGerInbox">
-        <i class="bi bi-inbox-fill"></i>
+        <i class="bi bi-inbox"></i>
         <span id="badge-ger-total" class="badge rounded-pill bg-danger notif-badge" style="display:none;">0</span>
       </button>
       <?php endif; ?>
 
-      <!-- ===== Botão para instalar PWA ===== -->
-      <button id="btnInstallApp"
-              class="btn btn-outline-secondary ms-2"
-              style="display:none;">
+      <button id="btnInstallApp" class="btn btn-outline-secondary ms-2" style="display:none;">
         <i class="bi bi-download me-1"></i> Instalar app
       </button>
-      <!-- ===== /Botão PWA ===== -->
 
       <div class="dropdown ms-3">
         <button class="btn btn-outline-success dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -418,7 +349,6 @@ unset($_SESSION['just_logged_in']);
 </nav>
 
 <?php
-// Inclui modais compartilhados fora do index, como você já faz
 if (basename($_SERVER['SCRIPT_NAME']) !== 'index.php') {
   if (!isset($GLOBALS['COH_MODAL_INBOX'])) { require __DIR__ . '/modal_coord_inbox.php'; $GLOBALS['COH_MODAL_INBOX']=1; }
   if ($role === 1 && !isset($GLOBALS['COH_MODAL_FISCAL'])) { require __DIR__ . '/modal_fiscal_inbox.php'; $GLOBALS['COH_MODAL_FISCAL']=1; }
@@ -453,51 +383,47 @@ if (basename($_SERVER['SCRIPT_NAME']) !== 'index.php') {
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
       </div>
 
-      <div class="modal-body p-0" id="modalGerBody" style="min-height:300px;">
-        <!-- Tabs -->
-        <ul class="nav nav-tabs px-3 pt-3" id="gerTabs" role="tablist">
-          <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="tab-reset-btn" data-bs-toggle="tab" data-bs-target="#tabReset" type="button" role="tab">
-              <i class="bi bi-shield-lock me-1"></i> Reset de Senha
-              <span id="badge-ger-reset" class="badge bg-danger ms-2" style="display:none;">0</span>
-            </button>
-          </li>
-          <li class="nav-item" role="presentation">
-            <button class="nav-link" id="tab-fale-btn" data-bs-toggle="tab" data-bs-target="#tabFale" type="button" role="tab">
-              <i class="bi bi-chat-dots me-1"></i> Fale Conosco
-              <span id="badge-ger-fale" class="badge bg-danger ms-2" style="display:none;">0</span>
-            </button>
-          </li>
-        </ul>
+      <div class="modal-body p-0" style="min-height:320px;">
+        <div class="px-3 pt-3">
+          <ul class="nav nav-tabs" id="gerTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="tabGerResetBtn" data-bs-toggle="tab" data-bs-target="#tabGerReset" type="button" role="tab">
+                <i class="bi bi-shield-lock me-1"></i> Resets
+                <span id="badge-ger-reset" class="badge bg-danger ms-1" style="display:none;">0</span>
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="tabGerFaleBtn" data-bs-toggle="tab" data-bs-target="#tabGerFale" type="button" role="tab">
+                <i class="bi bi-chat-dots me-1"></i> Fale Conosco
+                <span id="badge-ger-fale" class="badge bg-danger ms-1" style="display:none;">0</span>
+              </button>
+            </li>
+          </ul>
+        </div>
 
         <div class="tab-content">
-          <div class="tab-pane fade show active" id="tabReset" role="tabpanel">
-            <div id="tabResetContent">
-              <div class="text-center py-5 text-muted">
-                <div class="spinner-border text-warning" role="status"></div><br>Carregando...
-              </div>
+          <div class="tab-pane fade show active" id="tabGerReset" role="tabpanel">
+            <div id="gerTabResetContent" class="p-0">
+              <div class="text-center py-5 text-muted"><div class="spinner-border text-warning" role="status"></div><br>Carregando...</div>
             </div>
           </div>
 
-          <div class="tab-pane fade" id="tabFale" role="tabpanel">
-            <div id="tabFaleContent">
-              <div class="text-center py-5 text-muted">
-                <div class="spinner-border text-warning" role="status"></div><br>Carregando...
-              </div>
+          <div class="tab-pane fade" id="tabGerFale" role="tabpanel">
+            <div id="gerTabFaleContent" class="p-0">
+              <div class="text-center py-5 text-muted"><div class="spinner-border" role="status"></div><br>Carregando...</div>
             </div>
           </div>
         </div>
       </div>
 
       <div class="modal-footer">
-        <button class="btn btn-primary" data-bs-dismiss="modal">Fechar</button>
+        <button class="btn btn-primary" type="button" data-bs-dismiss="modal">Fechar</button>
       </div>
     </div>
   </div>
 </div>
 <?php endif; ?>
 
-<!-- Safe init for dropdowns (keeps layout intact) -->
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   try {
@@ -512,8 +438,8 @@ document.addEventListener('DOMContentLoaded', function () {
   } catch (e) {}
 });
 </script>
+
 <style>
-/* keep menus on top of content */
 .coh-topbar { z-index: 1030; }
 .coh-topbar .dropdown-menu { z-index: 1050; }
 </style>
