@@ -16,23 +16,54 @@ date_default_timezone_set('America/Sao_Paulo');
 
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
+function pretty_acao_log($acao): string {
+  $acao = strtoupper(trim((string)$acao));
+  if ($acao === '') return '';
+
+  $map = [
+    'SALVAR_DIRETO' => 'Salvo diretamente (Gerenciamento)',
+    'SALVAR'        => 'Salvo',
+    'UPDATE'        => 'Atualizado',
+    'INSERT'        => 'Incluído',
+    'DELETE'        => 'Excluído',
+  ];
+  if (isset($map[$acao])) return $map[$acao];
+
+  $t = str_replace(['_', '-'], ' ', strtolower((string)$acao));
+  $t = ucwords($t);
+  $t = str_replace([' Sei',' Emop',' Id '], [' SEI',' EMOP',' ID '], $t);
+  return $t;
+}
+
 /* ============================================================
    GARANTE SCHEMA DE LOG (fallback seguro)
 ============================================================ */
 if (!function_exists('ensure_contratos_log_schema')) {
   function ensure_contratos_log_schema(mysqli $conn): void {
-    // não altera nada se já existir
     $conn->query("CREATE TABLE IF NOT EXISTS emop_contratos_log (
       id INT AUTO_INCREMENT PRIMARY KEY,
       contrato_id INT NOT NULL,
+      usuario_id INT NULL,
       usuario_nome VARCHAR(255) NULL,
       diretoria VARCHAR(255) NULL,
       acao VARCHAR(255) NULL,
       detalhes TEXT NULL,
+      detalhes_json LONGTEXT NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       KEY idx_contrato (contrato_id),
       KEY idx_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $has = false;
+    if ($rs = $conn->query("SHOW COLUMNS FROM emop_contratos_log")) {
+      while ($c = $rs->fetch_assoc()) {
+        if (strcasecmp($c['Field'], 'detalhes_json') === 0) { $has = true; break; }
+      }
+      $rs->free();
+    }
+    if (!$has) {
+      $conn->query("ALTER TABLE emop_contratos_log ADD COLUMN detalhes_json LONGTEXT NULL AFTER detalhes");
+    }
   }
 }
 
@@ -47,7 +78,7 @@ function column_label_map(){ return [
   'Valor_Liquidado_Na_Medicao_RS'=>'Valor da Medição (R$)',
 ];}
 function prettify_column($col){
-  $label = str_replace('_',' ', $col);
+  $label = str_replace('_',' ', (string)$col);
   $label = ucwords(strtolower($label));
   $label = str_replace([' Sei',' Rj',' N '],[' SEI',' RJ',' Nº '], $label);
   $label = str_replace(' Nº  ',' Nº ', $label);
@@ -63,6 +94,31 @@ function scalarize_name($v){
       if (isset($v[$k]) && is_scalar($v[$k])) return (string)$v[$k];
     }
     return json_encode($v, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+  }
+  return json_encode($v, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+}
+
+function safe_json_decode_assoc($raw){
+  if (!is_string($raw)) return null;
+  $raw = trim($raw);
+  if ($raw === '' || $raw === 'null') return null;
+
+  $d = json_decode($raw, true);
+  if (json_last_error() === JSON_ERROR_NONE && is_array($d)) return $d;
+
+  $raw2 = stripslashes($raw);
+  $d2 = json_decode($raw2, true);
+  if (json_last_error() === JSON_ERROR_NONE && is_array($d2)) return $d2;
+
+  return null;
+}
+
+function normalize_value_for_view($v){
+  if ($v === null) return '—';
+  if (is_bool($v)) return $v ? 'true' : 'false';
+  if (is_scalar($v)) {
+    $s = trim((string)$v);
+    return ($s === '') ? '—' : $s;
   }
   return json_encode($v, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 }
@@ -191,7 +247,7 @@ if ($role >= 4) {
 if ($contrato_id > 0) {
   $rs = $conn->query("SELECT id, Objeto_Da_Obra AS objeto, Empresa, Diretoria FROM emop_contratos WHERE id={$contrato_id} LIMIT 1");
   $contrato = ($rs && $rs->num_rows)?$rs->fetch_assoc():null; if($rs) $rs->free();
-  $scope_title = 'Contrato '.(int)$contrato_id.( $contrato ? ' — '.h($contrato['Diretoria']??'').' — '.h($contrato['objeto']??'') : '');
+  $scope_title = 'Contrato '.(int)$contrato_id.( $contrato ? ' — '.h($contrato['Diretoria']??'').' — '.h($contrato['objeto']??'') : '' );
 } elseif ($role >= 4) {
   $scope_title = ($diretoria === '' || strtolower($diretoria) === 'todas')
     ? 'Todas as Diretorias'
@@ -202,7 +258,6 @@ if ($contrato_id > 0) {
 
 /* ============================================================
    CONSULTA 1 — SOLICITAÇÕES (coordenador_inbox)
-   (diretoria de referência = diretoria do contrato, fallback na diretoria do inbox)
 ============================================================ */
 $DIR_REF_INBOX = "COALESCE(NULLIF(c.Diretoria,''), NULLIF(a.diretoria,''))";
 
@@ -223,7 +278,8 @@ $selectInbox = "SELECT
     u.email AS fiscal_email,
     NULL AS usuario_nome_log,
     NULL AS acao_log,
-    NULL AS detalhes_log
+    NULL AS detalhes_log,
+    NULL AS detalhes_json_log
   FROM coordenador_inbox a
   LEFT JOIN emop_contratos c ON c.id = a.contrato_id
   LEFT JOIN usuarios_cohidro_sigce u ON u.id = a.fiscal_id";
@@ -273,7 +329,6 @@ $sqlInbox .= " ORDER BY a.contrato_id DESC, a.created_at DESC, a.id DESC";
 
 /* ============================================================
    CONSULTA 2 — AUDITORIA (emop_contratos_log)
-   (também filtrada pela diretoria do contrato)
 ============================================================ */
 ensure_contratos_log_schema($conn);
 
@@ -296,7 +351,8 @@ $selectLog = "SELECT
     NULL AS fiscal_email,
     l.usuario_nome AS usuario_nome_log,
     l.acao AS acao_log,
-    l.detalhes AS detalhes_log
+    l.detalhes AS detalhes_log,
+    l.detalhes_json AS detalhes_json_log
   FROM emop_contratos_log l
   LEFT JOIN emop_contratos c ON c.id = l.contrato_id";
 
@@ -313,12 +369,10 @@ if ($contrato_id > 0) {
   $whereLog[] = "{$DIR_REF_LOG} = '".$conn->real_escape_string($dirSess)."'";
 }
 
-// LOG representa alteração direta (sem fluxo). Consideramos como "APROVADO".
-// Então: aparece em TODOS e em APROVADO; não aparece em PENDENTE/REJEITADO.
+// LOG representa alteração direta (sem fluxo). Consideramos APROVADO.
 if ($status !== 'TODOS' && $status !== 'APROVADO') {
   $whereLog[] = "1=0";
 }
-
 
 if ($de !== ''  && preg_match('/^\d{4}-\d{2}-\d{2}$/', $de)) {
   $whereLog[] = "DATE(l.created_at) >= '".$conn->real_escape_string($de)."'";
@@ -337,6 +391,7 @@ if ($q !== '') {
       OR l.usuario_nome LIKE '{$qEsc}'
       OR l.acao LIKE '{$qEsc}'
       OR l.detalhes LIKE '{$qEsc}'
+      OR l.detalhes_json LIKE '{$qEsc}'
   )";
 }
 
@@ -360,7 +415,6 @@ if ($rs = $conn->query($sqlLog)) {
 
 $rows = array_merge($rowsInbox, $rowsLog);
 
-// ordenação final consistente (contrato desc, data desc, src, id desc)
 usort($rows, function($a, $b){
   $ca = (int)($a['contrato_id'] ?? 0);
   $cb = (int)($b['contrato_id'] ?? 0);
@@ -370,7 +424,6 @@ usort($rows, function($a, $b){
   $tb = strtotime((string)($b['created_at'] ?? '')) ?: 0;
   if ($ta !== $tb) return $tb <=> $ta;
 
-  // INBOX primeiro (para decisões), LOG depois
   $sa = (string)($a['src'] ?? '');
   $sb = (string)($b['src'] ?? '');
   if ($sa !== $sb) return ($sa === 'INBOX') ? -1 : 1;
@@ -380,11 +433,11 @@ usort($rows, function($a, $b){
   return $ib <=> $ia;
 });
 
-// KPIs (TOTAL inclui INBOX + LOG; status/tempo continuam só INBOX)
-$kpiTotalRegistros    = count($rows);       // INBOX + LOG
-$kpiTotalSolicitacoes = count($rowsInbox);  // apenas INBOX
-$kpiTotalAuditoria    = count($rowsLog);    // apenas LOG
-$kpiAprovadosDiretos = $kpiTotalAuditoria;
+// KPIs
+$kpiTotalRegistros    = count($rows);
+$kpiTotalSolicitacoes = count($rowsInbox);
+$kpiTotalAuditoria    = count($rowsLog);
+$kpiAprovadosDiretos  = $kpiTotalAuditoria;
 
 $kpiPendentes    = 0;
 $kpiAprovados    = 0;
@@ -392,7 +445,6 @@ $kpiRejeitados   = 0;
 $kpiTempoSegSum  = 0;
 $kpiTempoQtde    = 0;
 
-// updated_at existe?
 $hasUpdatedAt = false;
 if ($rsColsInbox = $conn->query("SHOW COLUMNS FROM coordenador_inbox")) {
   while ($rc = $rsColsInbox->fetch_assoc()) {
@@ -416,12 +468,8 @@ foreach ($rowsInbox as $r) {
     }
   }
 }
-
-// ✅ AQUI é o “final do cálculo” do INBOX
 $kpiAprovados += (int)$kpiAprovadosDiretos;
-
 $kpiTempoMedioSeg = ($kpiTempoQtde > 0) ? (int)round($kpiTempoSegSum / $kpiTempoQtde) : 0;
-
 
 /* ============================================================
    AGRUPAR POR CONTRATO + CACHE do "antes"
@@ -456,6 +504,8 @@ ob_start();
     --after-bd:#c8f0d6;
     --kpi-bg:#f9fafb;
     --kpi-bd:#e5e7eb;
+    --box-bg:#ffffff;
+    --box-bd:#e5e7eb;
   }
   .page { max-width: 1180px; margin: 1rem auto; }
   .sticky-head{ position: sticky; top:0; z-index:5; background:#fff; padding:.5rem 0 .25rem; }
@@ -475,6 +525,11 @@ ob_start();
     line-height:1;
     border:1px solid var(--pill-bd);
     background:var(--pill-bg);
+    max-width: 520px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
   }
   .pill.before s{ opacity:.65; }
   .pill.after{
@@ -509,8 +564,31 @@ ob_start();
   }
   .kpi-value{ font-size:1.25rem; font-weight:700; }
   .kpi-sub{ font-size:.75rem; color:var(--muted); }
+  .badge-ger{ background:#0ea5e9 !important; }
 
-  .badge-aud{ background:#0ea5e9 !important; }
+  /* único box “Resumo” */
+  .resumo-box{
+    background:var(--box-bg);
+    border:1px solid var(--box-bd);
+    border-radius:.75rem;
+    padding:.75rem .9rem;
+  }
+  .resumo-title{
+    font-size:.8rem;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    color:var(--muted);
+    margin-bottom:.5rem;
+  }
+  .resumo-meta{
+    color:var(--muted);
+    font-size:.8rem;
+    margin-top:.5rem;
+  }
+  .resumo-fallback{
+    white-space:pre-wrap;
+    color:#111827;
+  }
 </style>
 
 <div class="page">
@@ -569,64 +647,64 @@ ob_start();
     </form>
   </div>
 
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-label">Total de registros</div>
-        <div class="kpi-value"><?= (int)$kpiTotalRegistros ?></div>
-        <div class="kpi-sub">solicitações + auditoria</div>
-      </div>
-    
-      <div class="kpi-card">
-        <div class="kpi-label">Solicitações</div>
-        <div class="kpi-value"><?= (int)$kpiTotalSolicitacoes ?></div>
-        <div class="kpi-sub">no período selecionado</div>
-      </div>
-    
-      <div class="kpi-card">
-        <div class="kpi-label">Pendentes de aprovação</div>
-        <div class="kpi-value"><?= (int)$kpiPendentes ?></div>
-        <div class="kpi-sub">
-          <?php
-            $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
-            $pctPend = ($denBase > 0) ? round(((int)$kpiPendentes)*100/$denBase, 1) : 0;
-            $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
-            echo $pctPend.'% '.$txtBase;
-          ?>
-        </div>
-      </div>
-    
-      <div class="kpi-card">
-        <div class="kpi-label">Aprovadas</div>
-        <div class="kpi-value"><?= (int)$kpiAprovados ?></div>
-        <div class="kpi-sub">
-          <?php
-            $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
-            $pctApr  = ($denBase > 0) ? round(((int)$kpiAprovados)*100/$denBase, 1) : 0;
-            $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
-            echo $pctApr.'% '.$txtBase;
-          ?>
-        </div>
-      </div>
-    
-      <div class="kpi-card">
-        <div class="kpi-label">Rejeitadas</div>
-        <div class="kpi-value"><?= (int)$kpiRejeitados ?></div>
-        <div class="kpi-sub">
-          <?php
-            $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
-            $pctRej  = ($denBase > 0) ? round(((int)$kpiRejeitados)*100/$denBase, 1) : 0;
-            $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
-            echo $pctRej.'% '.$txtBase;
-          ?>
-        </div>
-      </div>
-    
-      <div class="kpi-card">
-        <div class="kpi-label">Tempo médio de aprovação</div>
-        <div class="kpi-value"><?= h(fmt_tempo_medio($kpiTempoMedioSeg)) ?></div>
-        <div class="kpi-sub">entre solicitação e decisão</div>
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Total de registros</div>
+      <div class="kpi-value"><?= (int)$kpiTotalRegistros ?></div>
+      <div class="kpi-sub">solicitações + auditoria</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Solicitações</div>
+      <div class="kpi-value"><?= (int)$kpiTotalSolicitacoes ?></div>
+      <div class="kpi-sub">no período selecionado</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Pendentes de aprovação</div>
+      <div class="kpi-value"><?= (int)$kpiPendentes ?></div>
+      <div class="kpi-sub">
+        <?php
+          $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
+          $pctPend = ($denBase > 0) ? round(((int)$kpiPendentes)*100/$denBase, 1) : 0;
+          $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
+          echo $pctPend.'% '.$txtBase;
+        ?>
       </div>
     </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Aprovadas</div>
+      <div class="kpi-value"><?= (int)$kpiAprovados ?></div>
+      <div class="kpi-sub">
+        <?php
+          $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
+          $pctApr  = ($denBase > 0) ? round(((int)$kpiAprovados)*100/$denBase, 1) : 0;
+          $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
+          echo $pctApr.'% '.$txtBase;
+        ?>
+      </div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Rejeitadas</div>
+      <div class="kpi-value"><?= (int)$kpiRejeitados ?></div>
+      <div class="kpi-sub">
+        <?php
+          $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
+          $pctRej  = ($denBase > 0) ? round(((int)$kpiRejeitados)*100/$denBase, 1) : 0;
+          $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
+          echo $pctRej.'% '.$txtBase;
+        ?>
+      </div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Tempo médio de aprovação</div>
+      <div class="kpi-value"><?= h(fmt_tempo_medio($kpiTempoMedioSeg)) ?></div>
+      <div class="kpi-sub">entre solicitação e decisão</div>
+    </div>
+  </div>
 
   <?php if (!$rows): ?>
     <div class="alert alert-info mt-3">Nenhum registro de alterações encontrado com os filtros aplicados.</div>
@@ -662,7 +740,7 @@ ob_start();
             $statusR  = strtoupper(trim((string)($row['status'] ?? 'PENDENTE')));
 
             if ($src === 'LOG') {
-              $badge = 'success'; // LOG agora é APROVADO
+              $badge = 'success';
             } else {
               $badge = ($statusR==='APROVADO'?'success':($statusR==='REJEITADO'?'danger':'secondary'));
             }
@@ -685,32 +763,57 @@ ob_start();
             $decisorNome = ($src === 'INBOX') ? resolve_decisor($row, $payload) : null;
             $decisaoEm   = ($src === 'INBOX') ? resolve_decision_datetime($row, $payload) : null;
 
-            // mudanças estruturadas (somente INBOX)
+            // mudanças estruturadas (INBOX)
             $changes = [];
             if ($src === 'INBOX' && is_array($payload) && isset($payload['campos']) && is_array($payload['campos'])) {
               foreach ($payload['campos'] as $col => $novo) {
                 $col_db = $col;
                 foreach ($cols as $c) { if (strcasecmp($c, $col)===0) { $col_db=$c; break; } }
                 $antes = $antesRow[$col_db] ?? '—';
-                if (is_array($novo) || is_object($novo)) {
-                  $novo = json_encode($novo, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-                }
                 $changes[] = [
                   'label'  => column_label($col_db),
-                  'antes'  => ($antes === '' ? '—' : $antes),
-                  'depois' => ($novo   === '' ? '—' : $novo),
+                  'antes'  => normalize_value_for_view($antes),
+                  'depois' => normalize_value_for_view($novo),
                 ];
               }
             }
 
-            // Auditoria: pega "último campo" igual ao form_contratos
-            $ultimoCampo = '';
-            if ($src === 'LOG' && !empty($row['detalhes_log'])) {
-              $detLines = preg_split('/\r\n|\r|\n/', (string)$row['detalhes_log']);
-              if (is_array($detLines) && count($detLines) > 0) {
-                $ultimoCampo = trim((string)end($detLines));
+            // mudanças estruturadas (LOG) via detalhes_json
+            $changesLog = [];
+            $metaLog = [];
+            $detJson = null;
+            if ($src === 'LOG' && !empty($row['detalhes_json_log'])) {
+              $detJson = safe_json_decode_assoc((string)$row['detalhes_json_log']);
+              if (is_array($detJson)) {
+                if (!empty($detJson['campos']) && is_array($detJson['campos'])) {
+                  foreach ($detJson['campos'] as $col => $pair) {
+                    $col_db = (string)$col;
+                    foreach ($cols as $c) { if (strcasecmp($c, $col_db)===0) { $col_db=$c; break; } }
+
+                    $antes  = (is_array($pair) && array_key_exists('antes', $pair))  ? $pair['antes']  : null;
+                    $depois = (is_array($pair) && array_key_exists('depois', $pair)) ? $pair['depois'] : null;
+
+                    $changesLog[] = [
+                      'label'  => column_label($col_db),
+                      'antes'  => normalize_value_for_view($antes),
+                      'depois' => normalize_value_for_view($depois),
+                    ];
+                  }
+                }
+                if (!empty($detJson['meta']) && is_array($detJson['meta'])) {
+                  $metaLog = $detJson['meta'];
+                }
               }
-              if ($ultimoCampo === '') $ultimoCampo = trim((string)$row['detalhes_log']);
+            }
+
+            // fallback texto (LOG)
+            $fallbackLines = [];
+            if ($src === 'LOG' && empty($changesLog) && !empty($row['detalhes_log'])) {
+              $lines = preg_split('/\r\n|\r|\n/', (string)$row['detalhes_log']);
+              foreach ($lines as $ln) {
+                $ln = trim((string)$ln);
+                if ($ln !== '') $fallbackLines[] = $ln;
+              }
             }
           ?>
           <div class="accordion-item border-0 border-top">
@@ -722,7 +825,7 @@ ob_start();
                   <div class="text-truncate text-muted">
                     <?= h($row['objeto'] ?? '') ?>
                     <?php if ($src === 'LOG'): ?>
-                      <span class="badge badge-aud ms-2">AUDITORIA</span>
+                      <span class="badge badge-ger ms-2">GERENCIAMENTO</span>
                     <?php endif; ?>
                   </div>
                   <span class="badge bg-<?= $badge ?>"><?= h($statusR) ?></span>
@@ -754,46 +857,78 @@ ob_start();
                     <?php endif; ?>
                   <?php else: ?>
                     <?php if (!empty($row['acao_log'])): ?>
-                      <div class="text-muted">Ação: <strong><?= h((string)$row['acao_log']) ?></strong></div>
+                      <div class="text-muted">Ação: <strong><?= h(pretty_acao_log($row['acao_log'])) ?></strong></div>
                     <?php endif; ?>
                   <?php endif; ?>
                 </div>
 
-                <?php if ($src === 'INBOX'): ?>
-                  <?php if (!empty($changes)): ?>
-                    <ul class="list-group list-group-flush mb-3">
-                      <?php foreach($changes as $c): ?>
-                        <li class="list-group-item d-flex justify-content-between align-items-center">
-                          <div class="fw-semibold"><?= h($c['label']) ?></div>
-                          <div class="ms-auto text-end">
-                            <span class="pill before"><s><?= h((string)$c['antes']) ?></s></span>
-                            <span class="arrow">→</span>
-                            <span class="pill after"><?= h((string)$c['depois']) ?></span>
-                          </div>
-                        </li>
-                      <?php endforeach; ?>
-                    </ul>
-                  <?php else: ?>
-                    <div class="alert alert-warning mb-3">Nenhuma alteração estruturada identificada.</div>
+                <!-- ✅ ÚNICO BLOCO: RESUMO -->
+                <div class="resumo-box">
+                  <div class="resumo-title">Resumo</div>
+
+                  <?php if ($src === 'INBOX'): ?>
+
+                    <?php if (!empty($changes)): ?>
+                      <ul class="list-group list-group-flush mb-0">
+                        <?php foreach($changes as $c): ?>
+                          <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div class="fw-semibold"><?= h($c['label']) ?></div>
+                            <div class="ms-auto text-end">
+                              <span class="pill before" title="<?= h((string)$c['antes']) ?>"><s><?= h((string)$c['antes']) ?></s></span>
+                              <span class="arrow">→</span>
+                              <span class="pill after" title="<?= h((string)$c['depois']) ?>"><?= h((string)$c['depois']) ?></span>
+                            </div>
+                          </li>
+                        <?php endforeach; ?>
+                      </ul>
+                    <?php else: ?>
+                      <div class="text-muted">Nenhuma alteração estruturada identificada.</div>
+                    <?php endif; ?>
+
+                  <?php else: /* LOG */ ?>
+
+                    <?php if (!empty($changesLog)): ?>
+                      <ul class="list-group list-group-flush mb-0">
+                        <?php foreach($changesLog as $c): ?>
+                          <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div class="fw-semibold"><?= h($c['label']) ?></div>
+                            <div class="ms-auto text-end">
+                              <span class="pill before" title="<?= h((string)$c['antes']) ?>"><s><?= h((string)$c['antes']) ?></s></span>
+                              <span class="arrow">→</span>
+                              <span class="pill after" title="<?= h((string)$c['depois']) ?>"><?= h((string)$c['depois']) ?></span>
+                            </div>
+                          </li>
+                        <?php endforeach; ?>
+                      </ul>
+                    <?php else: ?>
+                      <?php if (!empty($fallbackLines)): ?>
+                        <div class="resumo-fallback"><?= h(implode("\n", $fallbackLines)) ?></div>
+                      <?php else: ?>
+                        <div class="text-muted">Sem dados estruturados para exibir.</div>
+                      <?php endif; ?>
+                    <?php endif; ?>
+
+                    <?php
+                      // Meta (se vier)
+                      $metaParts = [];
+                      if (!empty($metaLog)) {
+                        foreach ($metaLog as $k=>$v) {
+                          if ($v === null || $v === '' || $v === 0 || $v === '0') continue;
+                          $metaParts[] = h(prettify_column((string)$k)).': <strong>'.h((string)$v).'</strong>';
+                        }
+                      }
+                      // Se não vier meta, pelo menos mostre contagem de campos quando houver antes/depois
+                      if (empty($metaParts) && !empty($changesLog)) {
+                        $metaParts[] = 'Campos alterados: <strong>'.count($changesLog).'</strong>';
+                      }
+                    ?>
+                    <?php if (!empty($metaParts)): ?>
+                      <div class="resumo-meta"><?= implode(' &nbsp;•&nbsp; ', $metaParts) ?></div>
+                    <?php endif; ?>
+
                   <?php endif; ?>
-                <?php else: ?>
-                  <?php if ($ultimoCampo !== ''): ?>
-                    <ul class="list-group list-group-flush mb-2">
-                      <li class="list-group-item d-flex justify-content-between align-items-center">
-                        <div class="fw-semibold">Último campo</div>
-                        <div class="ms-auto text-end">
-                          <span class="pill after"><?= h($ultimoCampo) ?></span>
-                        </div>
-                      </li>
-                    </ul>
-                  <?php endif; ?>
-                  <?php if (!empty($row['detalhes_log'])): ?>
-                    <div class="alert alert-light border mb-0">
-                      <div class="text-muted mb-1">Detalhes</div>
-                      <div style="white-space:pre-wrap"><?= h((string)$row['detalhes_log']) ?></div>
-                    </div>
-                  <?php endif; ?>
-                <?php endif; ?>
+                </div>
+                <!-- /RESUMO -->
 
               </div>
             </div>
