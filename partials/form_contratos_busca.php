@@ -308,7 +308,7 @@ if ($do_search && isset($conn) && $conn instanceof mysqli) {
 
           <div class="col-md-4">
             <label class="form-label">📄 Nº do Contrato</label>
-            <input class="form-control" name="nc" value="<?= e($no_con) ?>" placeholder="ex.: 01/2024, 123/2022...">
+            <input class="form-control" name="nc" value="<?= e($no_con) ?>" placeholder="ex.: 0001/22, 0123/24...">
           </div>
 
           <!-- Espaço para completar 12 colunas e alinhar com as demais linhas -->

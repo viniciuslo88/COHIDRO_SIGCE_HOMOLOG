@@ -1,6 +1,6 @@
 <?php
 // /php/historico_alteracoes_contratos.php
-// Página de Histórico de Alterações de Contratos — Dashboard/KPIs + lista detalhada
+// Histórico de Alterações — inclui solicitações (coordenador_inbox) + auditoria (emop_contratos_log)
 
 header('Content-Type: text/html; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -8,12 +8,33 @@ header('X-Content-Type-Options: nosniff');
 require_once __DIR__ . '/require_auth.php';
 require_once __DIR__ . '/session_guard.php';
 if (session_status() === PHP_SESSION_NONE) { session_start(); }
+
 require_once __DIR__ . '/conn.php';
 require_once __DIR__ . '/diretoria_guard.php';
 require_once __DIR__ . '/roles.php';
 date_default_timezone_set('America/Sao_Paulo');
 
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+
+/* ============================================================
+   GARANTE SCHEMA DE LOG (fallback seguro)
+============================================================ */
+if (!function_exists('ensure_contratos_log_schema')) {
+  function ensure_contratos_log_schema(mysqli $conn): void {
+    // não altera nada se já existir
+    $conn->query("CREATE TABLE IF NOT EXISTS emop_contratos_log (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      contrato_id INT NOT NULL,
+      usuario_nome VARCHAR(255) NULL,
+      diretoria VARCHAR(255) NULL,
+      acao VARCHAR(255) NULL,
+      detalhes TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_contrato (contrato_id),
+      KEY idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+  }
+}
 
 /* ============================================================
    FUNÇÕES AUXILIARES
@@ -34,7 +55,6 @@ function prettify_column($col){
 }
 function column_label($col){ $map = column_label_map(); return $map[$col] ?? prettify_column($col); }
 
-/* ===== Helpers de nome (solicitante / decisor) ===== */
 function scalarize_name($v){
   if ($v === null) return '';
   if (is_scalar($v)) return (string)$v;
@@ -79,20 +99,14 @@ function resolve_solicitante(array $row, $payload){
   return '—';
 }
 
-/**
- * Quem decidiu (aprovou/rejeitou)
- * Procura em campos típicos da tabela e do payload
- */
 function resolve_decisor(array $row, $payload){
   if (!is_array($payload)) $payload = [];
   $candidates = [
-    // campos na tabela
     'decisor_nome','decisor','decisao_por_nome','decisao_por',
     'avaliador_nome','coordenador_nome','gestor_nome',
     'aprovado_por_nome','aprovado_por',
     'rejeitado_por_nome','rejeitado_por',
     'decidido_por','decidido_por_nome',
-    // eventualmente campos genéricos
     'analista_nome','analista',
   ];
 
@@ -102,63 +116,39 @@ function resolve_decisor(array $row, $payload){
       if ($name !== '') return $name;
     }
   }
-
   foreach ($candidates as $k){
     if (!empty($payload[$k])) {
       $name = trim(scalarize_name($payload[$k]));
       if ($name !== '') return $name;
     }
   }
-
   return null;
 }
 
-/**
- * Data/hora em que a decisão foi tomada.
- * Aqui usamos updated_at como fallback padrão.
- */
 function resolve_decision_datetime(array $row, $payload){
   if (!is_array($payload)) $payload = [];
-
-  $decisionFields = [
-    'decision_at','decisao_em','status_at',
-    'aprovado_em','rejeitado_em',
-    'updated_at', // fallback mais genérico
-  ];
-
+  $decisionFields = ['decision_at','decisao_em','status_at','aprovado_em','rejeitado_em','updated_at'];
   foreach ($decisionFields as $k){
-    if (!empty($row[$k]) && $row[$k] !== '0000-00-00 00:00:00') {
-      return $row[$k];
-    }
+    if (!empty($row[$k]) && $row[$k] !== '0000-00-00 00:00:00') return $row[$k];
   }
-
   foreach ($decisionFields as $k){
-    if (!empty($payload[$k]) && $payload[$k] !== '0000-00-00 00:00:00') {
-      return $payload[$k];
-    }
+    if (!empty($payload[$k]) && $payload[$k] !== '0000-00-00 00:00:00') return $payload[$k];
   }
-
   return null;
 }
 
-/**
- * Formata tempo médio de aprovação em algo humano (Xd Yh Zmin)
- */
 function fmt_tempo_medio($segundos){
   $segundos = (int)$segundos;
   if ($segundos <= 0) return '—';
-
   $dias   = intdiv($segundos, 86400);
   $resto  = $segundos % 86400;
   $horas  = intdiv($resto, 3600);
   $resto  = $resto % 3600;
   $min    = intdiv($resto, 60);
-
   $partes = [];
   if ($dias > 0)  $partes[] = $dias.'d';
   if ($horas > 0) $partes[] = $horas.'h';
   if ($min > 0)   $partes[] = $min.'min';
-
   if (!$partes) return 'menos de 1 min';
   return implode(' ', $partes);
 }
@@ -211,90 +201,211 @@ if ($contrato_id > 0) {
 }
 
 /* ============================================================
-   QUERY BASE — com regra de acesso por nível
+   CONSULTA 1 — SOLICITAÇÕES (coordenador_inbox)
+   (diretoria de referência = diretoria do contrato, fallback na diretoria do inbox)
 ============================================================ */
-// Join com usuarios_cohidro_sigce p/ nome do fiscal
-$select = "SELECT a.*, 
-                  c.Objeto_Da_Obra AS objeto, 
-                  c.Empresa AS empresa, 
-                  c.Diretoria AS diretoria_c,
-                  u.nome  AS fiscal_nome, 
-                  u.email AS fiscal_email
-           FROM coordenador_inbox a
-           LEFT JOIN emop_contratos c ON c.id = a.contrato_id
-           LEFT JOIN usuarios_cohidro_sigce u ON u.id = a.fiscal_id";
+$DIR_REF_INBOX = "COALESCE(NULLIF(c.Diretoria,''), NULLIF(a.diretoria,''))";
 
-$where = [];
+$selectInbox = "SELECT
+    'INBOX' AS src,
+    a.id AS row_id,
+    a.contrato_id,
+    a.status,
+    a.created_at,
+    a.updated_at,
+    a.payload_json,
+    c.Objeto_Da_Obra AS objeto,
+    c.Empresa AS empresa,
+    c.Diretoria AS diretoria_contrato,
+    a.diretoria AS diretoria_solicitante,
+    {$DIR_REF_INBOX} AS diretoria_ref,
+    u.nome AS fiscal_nome,
+    u.email AS fiscal_email,
+    NULL AS usuario_nome_log,
+    NULL AS acao_log,
+    NULL AS detalhes_log
+  FROM coordenador_inbox a
+  LEFT JOIN emop_contratos c ON c.id = a.contrato_id
+  LEFT JOIN usuarios_cohidro_sigce u ON u.id = a.fiscal_id";
+
+$whereInbox = [];
 
 if ($contrato_id > 0) {
-  $where[] = "a.contrato_id = ".(int)$contrato_id;
+  $whereInbox[] = "a.contrato_id = ".(int)$contrato_id;
 } elseif ($role >= 4) {
-  // níveis 4 e 5 — “Todas” significa sem filtro
   if ($diretoria !== '' && strtolower($diretoria) !== 'todas') {
-    $where[] = "a.diretoria = '".$conn->real_escape_string($diretoria)."'";
+    $whereInbox[] = "{$DIR_REF_INBOX} = '".$conn->real_escape_string($diretoria)."'";
   }
 } else {
-  // níveis 2 e 3 — apenas sua diretoria
-  $where[] = "a.diretoria = '".$conn->real_escape_string($_SESSION['diretoria'] ?? '') ."'";
+  $dirSess = trim((string)($_SESSION['diretoria'] ?? ''));
+  if ($dirSess === '') {
+    http_response_code(403);
+    echo '<div class="alert alert-danger m-3">Diretoria da sessão não definida.</div>';
+    exit;
+  }
+  $whereInbox[] = "{$DIR_REF_INBOX} = '".$conn->real_escape_string($dirSess)."'";
 }
 
 if ($status !== 'TODOS') {
-  $where[] = "UPPER(a.status) = '".$conn->real_escape_string($status)."'";
+  $whereInbox[] = "UPPER(a.status) = '".$conn->real_escape_string($status)."'";
 }
+
 if ($de !== ''  && preg_match('/^\d{4}-\d{2}-\d{2}$/', $de)) {
-  $where[] = "DATE(a.created_at) >= '".$conn->real_escape_string($de)."'";
+  $whereInbox[] = "DATE(a.created_at) >= '".$conn->real_escape_string($de)."'";
 }
 if ($ate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $ate)) {
-  $where[] = "DATE(a.created_at) <= '".$conn->real_escape_string($ate)."'";
+  $whereInbox[] = "DATE(a.created_at) <= '".$conn->real_escape_string($ate)."'";
 }
 
-// (Opcional) — Se quiser considerar busca livre, pode ativar algo assim:
-// if ($q !== '') {
-//   $qEsc = '%'.$conn->real_escape_string($q).'%';
-//   $where[] = "(c.Objeto_Da_Obra LIKE '{$qEsc}' OR c.Empresa LIKE '{$qEsc}' OR a.payload_json LIKE '{$qEsc}')";
-// }
-
-$sql = $select;
-if (count($where) > 0) {
-  $sql .= " WHERE ".implode(' AND ', $where);
+if ($q !== '') {
+  $qEsc = '%'.$conn->real_escape_string($q).'%';
+  $whereInbox[] = "(
+      CAST(a.contrato_id AS CHAR) LIKE '{$qEsc}'
+      OR c.Objeto_Da_Obra LIKE '{$qEsc}'
+      OR c.Empresa LIKE '{$qEsc}'
+      OR {$DIR_REF_INBOX} LIKE '{$qEsc}'
+      OR a.payload_json LIKE '{$qEsc}'
+  )";
 }
-$sql .= " ORDER BY a.contrato_id DESC, a.created_at DESC, a.id DESC";
+
+$sqlInbox = $selectInbox . (count($whereInbox)?(" WHERE ".implode(' AND ', $whereInbox)):'');
+$sqlInbox .= " ORDER BY a.contrato_id DESC, a.created_at DESC, a.id DESC";
 
 /* ============================================================
-   EXECUÇÃO DA QUERY
+   CONSULTA 2 — AUDITORIA (emop_contratos_log)
+   (também filtrada pela diretoria do contrato)
 ============================================================ */
-$rows = [];
-if ($rs = $conn->query($sql)) {
-  while ($r = $rs->fetch_assoc()) $rows[] = $r;
-  if($rs) $rs->free();
+ensure_contratos_log_schema($conn);
+
+$DIR_REF_LOG = "COALESCE(NULLIF(c.Diretoria,''), NULLIF(l.diretoria,''))";
+
+$selectLog = "SELECT
+    'LOG' AS src,
+    l.id AS row_id,
+    l.contrato_id,
+    'APROVADO' AS status,
+    l.created_at,
+    NULL AS updated_at,
+    NULL AS payload_json,
+    c.Objeto_Da_Obra AS objeto,
+    c.Empresa AS empresa,
+    c.Diretoria AS diretoria_contrato,
+    l.diretoria AS diretoria_solicitante,
+    {$DIR_REF_LOG} AS diretoria_ref,
+    NULL AS fiscal_nome,
+    NULL AS fiscal_email,
+    l.usuario_nome AS usuario_nome_log,
+    l.acao AS acao_log,
+    l.detalhes AS detalhes_log
+  FROM emop_contratos_log l
+  LEFT JOIN emop_contratos c ON c.id = l.contrato_id";
+
+$whereLog = [];
+
+if ($contrato_id > 0) {
+  $whereLog[] = "l.contrato_id = ".(int)$contrato_id;
+} elseif ($role >= 4) {
+  if ($diretoria !== '' && strtolower($diretoria) !== 'todas') {
+    $whereLog[] = "{$DIR_REF_LOG} = '".$conn->real_escape_string($diretoria)."'";
+  }
+} else {
+  $dirSess = trim((string)($_SESSION['diretoria'] ?? ''));
+  $whereLog[] = "{$DIR_REF_LOG} = '".$conn->real_escape_string($dirSess)."'";
 }
 
+// LOG representa alteração direta (sem fluxo). Consideramos como "APROVADO".
+// Então: aparece em TODOS e em APROVADO; não aparece em PENDENTE/REJEITADO.
+if ($status !== 'TODOS' && $status !== 'APROVADO') {
+  $whereLog[] = "1=0";
+}
+
+
+if ($de !== ''  && preg_match('/^\d{4}-\d{2}-\d{2}$/', $de)) {
+  $whereLog[] = "DATE(l.created_at) >= '".$conn->real_escape_string($de)."'";
+}
+if ($ate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $ate)) {
+  $whereLog[] = "DATE(l.created_at) <= '".$conn->real_escape_string($ate)."'";
+}
+
+if ($q !== '') {
+  $qEsc = '%'.$conn->real_escape_string($q).'%';
+  $whereLog[] = "(
+      CAST(l.contrato_id AS CHAR) LIKE '{$qEsc}'
+      OR c.Objeto_Da_Obra LIKE '{$qEsc}'
+      OR c.Empresa LIKE '{$qEsc}'
+      OR {$DIR_REF_LOG} LIKE '{$qEsc}'
+      OR l.usuario_nome LIKE '{$qEsc}'
+      OR l.acao LIKE '{$qEsc}'
+      OR l.detalhes LIKE '{$qEsc}'
+  )";
+}
+
+$sqlLog = $selectLog . (count($whereLog)?(" WHERE ".implode(' AND ', $whereLog)):'');
+$sqlLog .= " ORDER BY l.contrato_id DESC, l.created_at DESC, l.id DESC";
+
 /* ============================================================
-   KPIs GLOBAIS DO PERÍODO FILTRADO
+   EXECUÇÃO — merge INBOX + LOG
 ============================================================ */
-$kpiTotal        = count($rows);
+$rowsInbox = [];
+if ($rs = $conn->query($sqlInbox)) {
+  while ($r = $rs->fetch_assoc()) $rowsInbox[] = $r;
+  $rs->free();
+}
+
+$rowsLog = [];
+if ($rs = $conn->query($sqlLog)) {
+  while ($r = $rs->fetch_assoc()) $rowsLog[] = $r;
+  $rs->free();
+}
+
+$rows = array_merge($rowsInbox, $rowsLog);
+
+// ordenação final consistente (contrato desc, data desc, src, id desc)
+usort($rows, function($a, $b){
+  $ca = (int)($a['contrato_id'] ?? 0);
+  $cb = (int)($b['contrato_id'] ?? 0);
+  if ($ca !== $cb) return $cb <=> $ca;
+
+  $ta = strtotime((string)($a['created_at'] ?? '')) ?: 0;
+  $tb = strtotime((string)($b['created_at'] ?? '')) ?: 0;
+  if ($ta !== $tb) return $tb <=> $ta;
+
+  // INBOX primeiro (para decisões), LOG depois
+  $sa = (string)($a['src'] ?? '');
+  $sb = (string)($b['src'] ?? '');
+  if ($sa !== $sb) return ($sa === 'INBOX') ? -1 : 1;
+
+  $ia = (int)($a['row_id'] ?? 0);
+  $ib = (int)($b['row_id'] ?? 0);
+  return $ib <=> $ia;
+});
+
+// KPIs (TOTAL inclui INBOX + LOG; status/tempo continuam só INBOX)
+$kpiTotalRegistros    = count($rows);       // INBOX + LOG
+$kpiTotalSolicitacoes = count($rowsInbox);  // apenas INBOX
+$kpiTotalAuditoria    = count($rowsLog);    // apenas LOG
+$kpiAprovadosDiretos = $kpiTotalAuditoria;
+
 $kpiPendentes    = 0;
 $kpiAprovados    = 0;
 $kpiRejeitados   = 0;
 $kpiTempoSegSum  = 0;
 $kpiTempoQtde    = 0;
 
-// checa se existe updated_at (usado como momento da decisão)
-$colsInbox = [];
+// updated_at existe?
 $hasUpdatedAt = false;
 if ($rsColsInbox = $conn->query("SHOW COLUMNS FROM coordenador_inbox")) {
   while ($rc = $rsColsInbox->fetch_assoc()) {
-    $colsInbox[] = $rc['Field'];
-    if ($rc['Field'] === 'updated_at') $hasUpdatedAt = true;
+    if ($rc['Field'] === 'updated_at') { $hasUpdatedAt = true; break; }
   }
   $rsColsInbox->free();
 }
 
-foreach ($rows as $r) {
+foreach ($rowsInbox as $r) {
   $st = strtoupper(trim((string)($r['status'] ?? 'PENDENTE')));
-  if ($st === 'PENDENTE')   $kpiPendentes++;
-  if ($st === 'APROVADO')   $kpiAprovados++;
-  if ($st === 'REJEITADO')  $kpiRejeitados++;
+  if ($st === 'PENDENTE')  $kpiPendentes++;
+  if ($st === 'APROVADO')  $kpiAprovados++;
+  if ($st === 'REJEITADO') $kpiRejeitados++;
 
   if ($st === 'APROVADO' && $hasUpdatedAt && !empty($r['created_at']) && !empty($r['updated_at'])) {
     $t1 = strtotime((string)$r['created_at']);
@@ -306,7 +417,11 @@ foreach ($rows as $r) {
   }
 }
 
+// ✅ AQUI é o “final do cálculo” do INBOX
+$kpiAprovados += (int)$kpiAprovadosDiretos;
+
 $kpiTempoMedioSeg = ($kpiTempoQtde > 0) ? (int)round($kpiTempoSegSum / $kpiTempoQtde) : 0;
+
 
 /* ============================================================
    AGRUPAR POR CONTRATO + CACHE do "antes"
@@ -314,7 +429,7 @@ $kpiTempoMedioSeg = ($kpiTempoQtde > 0) ? (int)round($kpiTempoSegSum / $kpiTempo
 $byContrato = [];
 foreach ($rows as $r) { $byContrato[(int)$r['contrato_id']][] = $r; }
 
-$cacheAntes = []; // contrato_id => row emop_contratos
+$cacheAntes = [];
 function contrato_antes(mysqli $conn, array &$cache, int $cid): array {
   if (!isset($cache[$cid])) {
     $res = $conn->query("SELECT * FROM emop_contratos WHERE id={$cid} LIMIT 1");
@@ -332,7 +447,6 @@ ob_start();
 <link href="/assets/bootstrap.min.css" rel="stylesheet">
 <style>
   :root{
-    --card-bd:#e9edf1;
     --muted:#6b7280;
     --chip:#f1f5f9;
     --chip-bd:#e2e8f0;
@@ -353,8 +467,6 @@ ob_start();
     border-radius:999px;
     font-size:.75rem;
   }
-
-  /* pílulas antes/depois */
   .pill{
     display:inline-block;
     padding:.2rem .5rem;
@@ -372,19 +484,14 @@ ob_start();
   }
   .arrow{ margin:0 .35rem; opacity:.6; }
 
-  /* KPIs */
   .kpi-grid{
     display:grid;
     grid-template-columns: repeat(5, minmax(0,1fr));
     gap:.75rem;
     margin:1rem 0 1.25rem;
   }
-  @media (max-width: 991.98px){
-    .kpi-grid{ grid-template-columns: repeat(2, minmax(0,1fr)); }
-  }
-  @media (max-width: 575.98px){
-    .kpi-grid{ grid-template-columns: minmax(0,1fr); }
-  }
+  @media (max-width: 991.98px){ .kpi-grid{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
+  @media (max-width: 575.98px){ .kpi-grid{ grid-template-columns: minmax(0,1fr); } }
   .kpi-card{
     border-radius:.75rem;
     border:1px solid var(--kpi-bd);
@@ -400,14 +507,10 @@ ob_start();
     letter-spacing:.04em;
     color:var(--muted);
   }
-  .kpi-value{
-    font-size:1.25rem;
-    font-weight:700;
-  }
-  .kpi-sub{
-    font-size:.75rem;
-    color:var(--muted);
-  }
+  .kpi-value{ font-size:1.25rem; font-weight:700; }
+  .kpi-sub{ font-size:.75rem; color:var(--muted); }
+
+  .badge-aud{ background:#0ea5e9 !important; }
 </style>
 
 <div class="page">
@@ -420,7 +523,6 @@ ob_start();
       </div>
     </div>
 
-    <!-- Filtros -->
     <form class="row search-row g-2 align-items-center" method="get" action="">
       <?php if($contrato_id>0): ?>
         <input type="hidden" name="contrato_id" value="<?= (int)$contrato_id ?>">
@@ -467,49 +569,64 @@ ob_start();
     </form>
   </div>
 
-  <!-- KPIs do período filtrado -->
-  <div class="kpi-grid">
-    <div class="kpi-card">
-      <div class="kpi-label">Total de solicitações</div>
-      <div class="kpi-value"><?= (int)$kpiTotal ?></div>
-      <div class="kpi-sub">no período selecionado</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Pendentes de aprovação</div>
-      <div class="kpi-value"><?= (int)$kpiPendentes ?></div>
-      <div class="kpi-sub">
-        <?php
-          $pctPend = ($kpiTotal>0) ? round($kpiPendentes*100/$kpiTotal,1) : 0;
-          echo $pctPend.'% das solicitações';
-        ?>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Total de registros</div>
+        <div class="kpi-value"><?= (int)$kpiTotalRegistros ?></div>
+        <div class="kpi-sub">solicitações + auditoria</div>
+      </div>
+    
+      <div class="kpi-card">
+        <div class="kpi-label">Solicitações</div>
+        <div class="kpi-value"><?= (int)$kpiTotalSolicitacoes ?></div>
+        <div class="kpi-sub">no período selecionado</div>
+      </div>
+    
+      <div class="kpi-card">
+        <div class="kpi-label">Pendentes de aprovação</div>
+        <div class="kpi-value"><?= (int)$kpiPendentes ?></div>
+        <div class="kpi-sub">
+          <?php
+            $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
+            $pctPend = ($denBase > 0) ? round(((int)$kpiPendentes)*100/$denBase, 1) : 0;
+            $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
+            echo $pctPend.'% '.$txtBase;
+          ?>
+        </div>
+      </div>
+    
+      <div class="kpi-card">
+        <div class="kpi-label">Aprovadas</div>
+        <div class="kpi-value"><?= (int)$kpiAprovados ?></div>
+        <div class="kpi-sub">
+          <?php
+            $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
+            $pctApr  = ($denBase > 0) ? round(((int)$kpiAprovados)*100/$denBase, 1) : 0;
+            $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
+            echo $pctApr.'% '.$txtBase;
+          ?>
+        </div>
+      </div>
+    
+      <div class="kpi-card">
+        <div class="kpi-label">Rejeitadas</div>
+        <div class="kpi-value"><?= (int)$kpiRejeitados ?></div>
+        <div class="kpi-sub">
+          <?php
+            $denBase = ((int)$kpiTotalSolicitacoes > 0) ? (int)$kpiTotalSolicitacoes : (int)$kpiTotalRegistros;
+            $pctRej  = ($denBase > 0) ? round(((int)$kpiRejeitados)*100/$denBase, 1) : 0;
+            $txtBase = ((int)$kpiTotalSolicitacoes > 0) ? 'das solicitações' : 'dos registros';
+            echo $pctRej.'% '.$txtBase;
+          ?>
+        </div>
+      </div>
+    
+      <div class="kpi-card">
+        <div class="kpi-label">Tempo médio de aprovação</div>
+        <div class="kpi-value"><?= h(fmt_tempo_medio($kpiTempoMedioSeg)) ?></div>
+        <div class="kpi-sub">entre solicitação e decisão</div>
       </div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Aprovadas</div>
-      <div class="kpi-value"><?= (int)$kpiAprovados ?></div>
-      <div class="kpi-sub">
-        <?php
-          $pctApr = ($kpiTotal>0) ? round($kpiAprovados*100/$kpiTotal,1) : 0;
-          echo $pctApr.'% das solicitações';
-        ?>
-      </div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Rejeitadas</div>
-      <div class="kpi-value"><?= (int)$kpiRejeitados ?></div>
-      <div class="kpi-sub">
-        <?php
-          $pctRej = ($kpiTotal>0) ? round($kpiRejeitados*100/$kpiTotal,1) : 0;
-          echo $pctRej.'% das solicitações';
-        ?>
-      </div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Tempo médio de aprovação</div>
-      <div class="kpi-value"><?= h(fmt_tempo_medio($kpiTempoMedioSeg)) ?></div>
-      <div class="kpi-sub">entre solicitação e decisão</div>
-    </div>
-  </div>
 
   <?php if (!$rows): ?>
     <div class="alert alert-info mt-3">Nenhum registro de alterações encontrado com os filtros aplicados.</div>
@@ -520,15 +637,13 @@ ob_start();
           <div class="contract-title fw-bold">Contrato <?= (int)$cid ?></div>
           <div class="d-flex flex-wrap align-items-center gap-2">
             <span class="chip"><?= h($items[0]['empresa'] ?? '') ?></span>
-            <span class="chip">Diretoria: <?= h($items[0]['diretoria'] ?? $items[0]['diretoria_c'] ?? '') ?></span>
+            <span class="chip">Diretoria: <?= h($items[0]['diretoria_ref'] ?? '') ?></span>
           </div>
         </div>
 
         <?php
-          // carrega a linha atual do contrato (estado "antes")
           $antesRow = contrato_antes($conn, $cacheAntes, (int)$cid);
 
-          // pega colunas atuais do banco para resolver case-insensitive
           $cols = [];
           if ($rsCols = $conn->query("SHOW COLUMNS FROM emop_contratos")) {
             while ($rc = $rsCols->fetch_assoc()) $cols[] = $rc['Field'];
@@ -538,27 +653,42 @@ ob_start();
 
         <div class="accordion" id="acc-<?= (int)$cid ?>">
           <?php foreach ($items as $row):
-            $payload = json_decode((string)($row['payload_json'] ?? ''), true);
+            $src = (string)($row['src'] ?? 'INBOX');
+
+            $payload = ($src === 'INBOX')
+              ? json_decode((string)($row['payload_json'] ?? ''), true)
+              : null;
+
             $statusR  = strtoupper(trim((string)($row['status'] ?? 'PENDENTE')));
-            $badge   = ($statusR==='APROVADO'?'success':($statusR==='REJEITADO'?'danger':'secondary'));
-            $itemId  = 'c'.$cid.'-'.$row['id'];
 
-            // Fiscal (solicitante)
-            $fiscal = '';
-            foreach (['fiscal_nome','fiscal_email'] as $k) {
-              if (!empty($row[$k])) { $fiscal = trim((string)$row[$k]); break; }
+            if ($src === 'LOG') {
+              $badge = 'success'; // LOG agora é APROVADO
+            } else {
+              $badge = ($statusR==='APROVADO'?'success':($statusR==='REJEITADO'?'danger':'secondary'));
             }
-            if ($fiscal === '') $fiscal = resolve_solicitante($row, $payload);
 
-            // Decisor (quem aprovou/rejeitou)
-            $decisorNome = resolve_decisor($row, $payload);
-            $decisaoEm   = resolve_decision_datetime($row, $payload);
+            $itemId  = 'c'.$cid.'-'.$src.'-'.$row['row_id'];
 
-            // monta lista de campos alterados (exibe antes→depois)
+            // Solicitante / autor
+            if ($src === 'LOG') {
+              $autor = trim((string)($row['usuario_nome_log'] ?? '')) ?: 'Usuário não identificado';
+              $dirAutor = trim((string)($row['diretoria_solicitante'] ?? ''));
+              $fiscal = $autor . ($dirAutor !== '' ? ' — Diretoria '.$dirAutor : '');
+            } else {
+              $fiscal = '';
+              foreach (['fiscal_nome','fiscal_email'] as $k) {
+                if (!empty($row[$k])) { $fiscal = trim((string)$row[$k]); break; }
+              }
+              if ($fiscal === '') $fiscal = resolve_solicitante($row, $payload);
+            }
+
+            $decisorNome = ($src === 'INBOX') ? resolve_decisor($row, $payload) : null;
+            $decisaoEm   = ($src === 'INBOX') ? resolve_decision_datetime($row, $payload) : null;
+
+            // mudanças estruturadas (somente INBOX)
             $changes = [];
-            if (is_array($payload) && isset($payload['campos']) && is_array($payload['campos'])) {
+            if ($src === 'INBOX' && is_array($payload) && isset($payload['campos']) && is_array($payload['campos'])) {
               foreach ($payload['campos'] as $col => $novo) {
-                // resolver nome da coluna respeitando case do banco
                 $col_db = $col;
                 foreach ($cols as $c) { if (strcasecmp($c, $col)===0) { $col_db=$c; break; } }
                 $antes = $antesRow[$col_db] ?? '—';
@@ -573,164 +703,96 @@ ob_start();
               }
             }
 
-            // Novas medições / aditivos / reajustes (exibição somente se houver)
-            $medicoes = []; $aditivos = []; $reajustes = [];
-            if (is_array($payload) && !empty($payload['novas_medicoes']) && is_array($payload['novas_medicoes'])) {
-              foreach ($payload['novas_medicoes'] as $m) {
-                if (!is_array($m)) continue;
-                $medicoes[] = [
-                  'data'       => $m['data'] ?? ($m['data_medicao'] ?? ''),
-                  'valor_rs'   => $m['valor_rs'] ?? ($m['valor'] ?? ''),
-                  'acumulado'  => $m['acumulado_rs'] ?? '',
-                  'percentual' => $m['percentual'] ?? '',
-                  'obs'        => $m['obs'] ?? ($m['observacao'] ?? ''),
-                ];
+            // Auditoria: pega "último campo" igual ao form_contratos
+            $ultimoCampo = '';
+            if ($src === 'LOG' && !empty($row['detalhes_log'])) {
+              $detLines = preg_split('/\r\n|\r|\n/', (string)$row['detalhes_log']);
+              if (is_array($detLines) && count($detLines) > 0) {
+                $ultimoCampo = trim((string)end($detLines));
               }
-            }
-            if (is_array($payload) && !empty($payload['novos_aditivos']) && is_array($payload['novos_aditivos'])) {
-              foreach ($payload['novos_aditivos'] as $a) {
-                if (!is_array($a)) continue;
-                $aditivos[] = [
-                  'numero'          => $a['numero_aditivo'] ?? '',
-                  'data'            => $a['data'] ?? '',
-                  'tipo'            => $a['tipo'] ?? '',
-                  'valor_total'     => $a['valor_aditivo_total'] ?? '',
-                  'valor_total_apos'=> $a['valor_total_apos_aditivo'] ?? '',
-                  'obs'             => $a['observacao'] ?? '',
-                ];
-              }
-            }
-            if (is_array($payload) && !empty($payload['novos_reajustes']) && is_array($payload['novos_reajustes'])) {
-              foreach ($payload['novos_reajustes'] as $rj) {
-                if (!is_array($rj)) continue;
-                $reajustes[] = [
-                  'indice'     => $rj['indice'] ?? '',
-                  'percentual' => $rj['percentual'] ?? '',
-                  'data_base'  => $rj['data_base'] ?? '',
-                  'valor_apos' => $rj['valor_total_apos_reajuste'] ?? '',
-                  'obs'        => $rj['observacao'] ?? '',
-                ];
-              }
+              if ($ultimoCampo === '') $ultimoCampo = trim((string)$row['detalhes_log']);
             }
           ?>
           <div class="accordion-item border-0 border-top">
             <h2 class="accordion-header" id="h-<?= $itemId ?>">
-              <button class="accordion-button collapsed bg-white" type="button" data-bs-toggle="collapse" data-bs-target="#b-<?= $itemId ?>" aria-expanded="false" aria-controls="b-<?= $itemId ?>">
+              <button class="accordion-button collapsed bg-white" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#b-<?= $itemId ?>"
+                      aria-expanded="false" aria-controls="b-<?= $itemId ?>">
                 <div class="w-100 d-flex justify-content-between align-items-center">
-                  <div class="text-truncate text-muted"><?= h($row['objeto'] ?? '') ?></div>
+                  <div class="text-truncate text-muted">
+                    <?= h($row['objeto'] ?? '') ?>
+                    <?php if ($src === 'LOG'): ?>
+                      <span class="badge badge-aud ms-2">AUDITORIA</span>
+                    <?php endif; ?>
+                  </div>
                   <span class="badge bg-<?= $badge ?>"><?= h($statusR) ?></span>
                 </div>
               </button>
             </h2>
-            <div id="b-<?= $itemId ?>" class="accordion-collapse collapse" aria-labelledby="h-<?= $itemId ?>" data-bs-parent="#acc-<?= (int)$cid ?>">
+
+            <div id="b-<?= $itemId ?>" class="accordion-collapse collapse"
+                 aria-labelledby="h-<?= $itemId ?>" data-bs-parent="#acc-<?= (int)$cid ?>">
               <div class="accordion-body pt-2 small">
                 <div class="mb-2">
                   <div class="text-muted">
-                    Solicitado por <strong><?= h($fiscal ?: '—') ?></strong>
+                    <?= ($src === 'LOG') ? 'Registrado por' : 'Solicitado por' ?>
+                    <strong><?= h($fiscal ?: '—') ?></strong>
                     <?php if (!empty($row['created_at'])): ?>
                       em <?= h(date('d/m/Y H:i', strtotime((string)$row['created_at']))) ?>
                     <?php endif; ?>
                   </div>
 
-                  <?php if ($statusR === 'APROVADO' || $statusR === 'REJEITADO'): ?>
-                    <div class="text-muted">
-                      <?= ($statusR==='APROVADO'?'Aprovado':'Rejeitado') ?>
-                      <?php if ($decisorNome): ?>
-                        por <strong><?= h($decisorNome) ?></strong>
-                      <?php endif; ?>
-                      <?php if ($decisaoEm): ?>
-                        em <?= h(date('d/m/Y H:i', strtotime((string)$decisaoEm))) ?>
-                      <?php endif; ?>
-                    </div>
+                  <?php if ($src === 'INBOX'): ?>
+                    <?php if ($statusR === 'APROVADO' || $statusR === 'REJEITADO'): ?>
+                      <div class="text-muted">
+                        <?= ($statusR==='APROVADO'?'Aprovado':'Rejeitado') ?>
+                        <?php if ($decisorNome): ?> por <strong><?= h($decisorNome) ?></strong><?php endif; ?>
+                        <?php if ($decisaoEm): ?> em <?= h(date('d/m/Y H:i', strtotime((string)$decisaoEm))) ?><?php endif; ?>
+                      </div>
+                    <?php else: ?>
+                      <div class="text-muted">Aguardando decisão dos níveis competentes.</div>
+                    <?php endif; ?>
                   <?php else: ?>
-                    <div class="text-muted">
-                      Aguardando decisão dos níveis competentes.
-                    </div>
+                    <?php if (!empty($row['acao_log'])): ?>
+                      <div class="text-muted">Ação: <strong><?= h((string)$row['acao_log']) ?></strong></div>
+                    <?php endif; ?>
                   <?php endif; ?>
                 </div>
 
-                <?php if (!empty($changes)): ?>
-                  <ul class="list-group list-group-flush mb-3">
-                    <?php foreach($changes as $c): ?>
+                <?php if ($src === 'INBOX'): ?>
+                  <?php if (!empty($changes)): ?>
+                    <ul class="list-group list-group-flush mb-3">
+                      <?php foreach($changes as $c): ?>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                          <div class="fw-semibold"><?= h($c['label']) ?></div>
+                          <div class="ms-auto text-end">
+                            <span class="pill before"><s><?= h((string)$c['antes']) ?></s></span>
+                            <span class="arrow">→</span>
+                            <span class="pill after"><?= h((string)$c['depois']) ?></span>
+                          </div>
+                        </li>
+                      <?php endforeach; ?>
+                    </ul>
+                  <?php else: ?>
+                    <div class="alert alert-warning mb-3">Nenhuma alteração estruturada identificada.</div>
+                  <?php endif; ?>
+                <?php else: ?>
+                  <?php if ($ultimoCampo !== ''): ?>
+                    <ul class="list-group list-group-flush mb-2">
                       <li class="list-group-item d-flex justify-content-between align-items-center">
-                        <div class="fw-semibold"><?= h($c['label']) ?></div>
+                        <div class="fw-semibold">Último campo</div>
                         <div class="ms-auto text-end">
-                          <span class="pill before"><s><?= h((string)$c['antes']) ?></s></span>
-                          <span class="arrow">→</span>
-                          <span class="pill after"><?= h((string)$c['depois']) ?></span>
+                          <span class="pill after"><?= h($ultimoCampo) ?></span>
                         </div>
                       </li>
-                    <?php endforeach; ?>
-                  </ul>
-                <?php else: ?>
-                  <div class="alert alert-warning mb-3">Nenhuma alteração estruturada identificada.</div>
-                <?php endif; ?>
-
-                <?php if (!empty($medicoes)): ?>
-                <div class="table-responsive mb-3">
-                  <table class="table table-sm mb-0">
-                    <thead>
-                      <tr><th colspan="5">Novas medições</th></tr>
-                      <tr><th>Data</th><th>Valor (R$)</th><th>Acumulado (R$)</th><th>%</th><th>Obs</th></tr>
-                    </thead>
-                    <tbody>
-                      <?php foreach($medicoes as $m): ?>
-                        <tr>
-                          <td><?= h($m['data']) ?></td>
-                          <td><?= h((string)$m['valor_rs']) ?></td>
-                          <td><?= h((string)$m['acumulado']) ?></td>
-                          <td><?= h((string)$m['percentual']) ?></td>
-                          <td><?= h((string)$m['obs']) ?></td>
-                        </tr>
-                      <?php endforeach; ?>
-                    </tbody>
-                  </table>
-                </div>
-                <?php endif; ?>
-
-                <?php if (!empty($aditivos)): ?>
-                <div class="table-responsive mb-3">
-                  <table class="table table-sm mb-0">
-                    <thead>
-                      <tr><th colspan="6">Novos aditivos</th></tr>
-                      <tr><th>Nº</th><th>Data</th><th>Tipo</th><th>Valor do Aditivo</th><th>Valor Total Após</th><th>Obs</th></tr>
-                    </thead>
-                    <tbody>
-                      <?php foreach($aditivos as $a): ?>
-                        <tr>
-                          <td><?= h((string)$a['numero']) ?></td>
-                          <td><?= h((string)$a['data']) ?></td>
-                          <td><?= h((string)$a['tipo']) ?></td>
-                          <td><?= h((string)$a['valor_total']) ?></td>
-                          <td><?= h((string)$a['valor_total_apos']) ?></td>
-                          <td><?= h((string)$a['obs']) ?></td>
-                        </tr>
-                      <?php endforeach; ?>
-                    </tbody>
-                  </table>
-                </div>
-                <?php endif; ?>
-
-                <?php if (!empty($reajustes)): ?>
-                <div class="table-responsive">
-                  <table class="table table-sm mb-0">
-                    <thead>
-                      <tr><th colspan="5">Novos reajustes</th></tr>
-                      <tr><th>Índice</th><th>%</th><th>Data-base</th><th>Valor Total Após Reajuste</th><th>Obs</th></tr>
-                    </thead>
-                    <tbody>
-                      <?php foreach($reajustes as $rj): ?>
-                        <tr>
-                          <td><?= h((string)$rj['indice']) ?></td>
-                          <td><?= h((string)$rj['percentual']) ?></td>
-                          <td><?= h((string)$rj['data_base']) ?></td>
-                          <td><?= h((string)$rj['valor_apos']) ?></td>
-                          <td><?= h((string)$rj['obs']) ?></td>
-                        </tr>
-                      <?php endforeach; ?>
-                    </tbody>
-                  </table>
-                </div>
+                    </ul>
+                  <?php endif; ?>
+                  <?php if (!empty($row['detalhes_log'])): ?>
+                    <div class="alert alert-light border mb-0">
+                      <div class="text-muted mb-1">Detalhes</div>
+                      <div style="white-space:pre-wrap"><?= h((string)$row['detalhes_log']) ?></div>
+                    </div>
+                  <?php endif; ?>
                 <?php endif; ?>
 
               </div>

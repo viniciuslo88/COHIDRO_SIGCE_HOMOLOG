@@ -448,7 +448,6 @@ require_once __DIR__ . '/partials/header.php';
         if (ok) visible++;
       });
 
-      if (count) count.textContent = `${visible} de ${items.length} itens`;
     }
 
     if (input) input.addEventListener('input', applyFilter);

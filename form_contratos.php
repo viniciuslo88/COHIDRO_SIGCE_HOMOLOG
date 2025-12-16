@@ -280,9 +280,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           if (in_array($c, $ignoredCols, true)) continue;
           if (!array_key_exists($c, $_POST)) continue;
 
-          $v = $_POST[$c];
-          if (is_array($v)) $v = json_encode($v, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-          else $v = trim((string)$v);
+            $v = $_POST[$c];
+            
+            // >>> TRATAMENTO ESPECIAL PARA FISCAIS EXTRAS (salva JSON limpo ou NULL)
+            if ($c === 'Fiscais_Extras') {
+                $arr = is_array($v) ? $v : [];
+                $arr = array_map('trim', $arr);
+                $arr = array_filter($arr, function($x){ return $x !== ''; });
+                $arr = array_values(array_unique($arr));
+                $v   = $arr ? json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
+            }
+            // <<< fim tratamento especial
+            else {
+                if (is_array($v)) $v = json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                else $v = trim((string)$v);
+            }
 
           $isDateLike = (stripos($c, '_Data') !== false) || (stripos($c, 'Data_') === 0) || preg_match('~_Data$~i', $c) || in_array($c, ['Data','Data_Inicio','Data_Fim','Data_Inicial','Data_Final'], true);
           if ($isDateLike) {
@@ -396,9 +408,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (in_array($c, $ignoredCols, true)) continue;
         if (!array_key_exists($c, $_POST)) continue;
 
-        $new = is_array($_POST[$c])
-              ? json_encode($_POST[$c], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
-              : (string)$_POST[$c];
+        if ($c === 'Fiscais_Extras') {
+            $arr = is_array($_POST[$c]) ? $_POST[$c] : [];
+            $arr = array_map('trim', $arr);
+            $arr = array_filter($arr, function($x){ return $x !== ''; });
+            $arr = array_values(array_unique($arr));
+            $new = $arr ? json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
+        } else {
+            $new = is_array($_POST[$c])
+                  ? json_encode($_POST[$c], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                  : (string)$_POST[$c];
+        }
+
         $old = isset($rowNow[$c]) ? (string)$rowNow[$c] : null;
 
         if (coh_values_differ($old, $new, $c)) {
@@ -761,344 +782,23 @@ echo '</main>';
 
 require_once __DIR__ . '/partials/modal_coord_inbox.php';
 require_once __DIR__ . '/partials/footer.php';
-?>
 
-<script>
-// [PASSO 2] Inicializa Objeto Global, CARREGA RASCUNHO e DESTACA ERROS
-(function () {
-  if (!window.COH) window.COH = {};
-  
-  // 1. Carrega listas complexas (Medições/Aditivos)
-  var draftData = <?php echo json_encode($draft_lists ?? ['medicoes'=>[], 'aditivos'=>[], 'reajustes'=>[]]); ?>;
-  window.COH.draft = draftData;
+/**
+ * ✅ Dados para o JS externo
+ */
+$__draft    = $draft_lists ?? ['medicoes'=>[], 'aditivos'=>[], 'reajustes'=>[]];
+$__changed  = $highlight_fields ?? [];
+$__reviewId = (int)($review_id ?? 0);
 
-  // 2. Lógica de DESTAQUE (Highlight) dos campos alterados
-  var changedFields = <?php echo json_encode($highlight_fields ?? []); ?>;
+$__jsFile = __DIR__ . '/assets/js/form_contratos.js';
+$__v = is_file($__jsFile) ? (int)@filemtime($__jsFile) : time();
 
-  document.addEventListener('DOMContentLoaded', function() {
-      if(changedFields && changedFields.length > 0) {
-          
-          changedFields.forEach(function(fieldName) {
-              // Tenta encontrar o input pelo nome (tenta seletores diferentes para garantir)
-              var el = document.querySelector('[name="'+fieldName+'"]');
-              
-              if(el) {
-                  // Aplica borda vermelha e fundo levemente avermelhado
-                  el.style.border = '2px solid #dc3545'; 
-                  el.style.backgroundColor = '#fff8f8';
-                  el.setAttribute('title', 'DADO ANTERIOR (RECUSADO). Por favor, corrija.');
-                  
-                  // Adiciona etiqueta de erro no label
-                  var label = document.querySelector('label[for="'+el.id+'"]');
-                  if(label && !label.innerHTML.includes('(Revisar)')) {
-                      label.innerHTML += ' <span class="text-danger small fw-bold">(Revisar)</span>';
-                  }
-              }
-          });
-          
-          // Rola a tela até o primeiro erro encontrado
-          // Usamos um loop para achar o primeiro elemento visível que conseguimos marcar
-          for(var i=0; i<changedFields.length; i++){
-              var first = document.querySelector('[name="'+changedFields[i]+'"]');
-              if(first){
-                  first.scrollIntoView({behavior: 'smooth', block: 'center'});
-                  break;
-              }
-          }
-      }
-  });
-})();
-</script>
+echo '<div id="coh-page-data" class="d-none"'
+   . ' data-draft="'   . e(json_encode($__draft,   JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)) . '"'
+   . ' data-changed="' . e(json_encode($__changed, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)) . '"'
+   . ' data-review-id="'. (int)$__reviewId . '"'
+   . ' data-can-edit="'. ($can_edit_immediately ? '1' : '0') . '"'
+   . ' data-can-req="'.  ($can_request_approval ? '1' : '0') . '"'
+   . '></div>';
 
-<script>
-document.addEventListener('DOMContentLoaded', function(){
-  var form = document.querySelector('form[data-form="emop-contrato"]') || document.getElementById('coh-form');
-  if (!form) return;
-
-  var hidden = form.querySelector('input[name="action"]');
-  if (!hidden) { hidden = document.createElement('input'); hidden.type='hidden'; hidden.name='action'; form.appendChild(hidden); }
-
-  // 1. INPUTS HIDDEN AGORA SÃO CRIADOS DIRETO (SE NÃO EXISTIREM)
-  var ids = ['novas_medicoes_json', 'novos_aditivos_json', 'novos_reajustes_json'];
-  ids.forEach(function(id){
-      if(!form.querySelector('input[name="'+id+'"]')){
-          var inp = document.createElement('input');
-          inp.type = 'hidden'; 
-          inp.name = id; 
-          inp.id = id;
-          form.appendChild(inp);
-      }
-  });
-
-  // 2. FUNÇÃO QUE FORÇA A ATUALIZAÇÃO DOS CAMPOS OCULTOS
-  window.cohForceSync = function() {
-      var D = (window.COH && window.COH.draft) ? window.COH.draft : {medicoes:[],aditivos:[],reajustes:[]};
-      
-      var iA = document.getElementById('novos_aditivos_json');
-      var iM = document.getElementById('novas_medicoes_json');
-      var iR = document.getElementById('novos_reajustes_json');
-
-      if(iA) iA.value = JSON.stringify(D.aditivos || []);
-      if(iM) iM.value = JSON.stringify(D.medicoes || []);
-      if(iR) iR.value = JSON.stringify(D.reajustes || []);
-  };
-
-  var canEditImmediately = <?php echo json_encode($can_edit_immediately); ?>;
-  var canRequestApproval = <?php echo json_encode($can_request_approval); ?>;
-  var btnSalvar          = document.getElementById('btnSalvarContrato');
-
-  // CONFIGURAÇÃO DOS BOTÕES
-  if (btnSalvar) {
-    var handler = function(e, actionType) {
-        // Garante que o sync rode ANTES do POST
-        if (e) e.preventDefault();
-
-        window.cohForceSync();
-        
-        var iA = document.getElementById('novos_aditivos_json');
-        var D = window.COH.draft || {aditivos:[]};
-        if (D.aditivos.length > 0 && iA && (!iA.value || iA.value === '[]')) {
-            iA.value = JSON.stringify(D.aditivos);
-        }
-
-        hidden.value = actionType;
-
-        // submit explícito para evitar casos em que o botão não é type="submit"
-        form.submit();
-    };
-
-    if (canEditImmediately) {
-        btnSalvar.innerText = 'Salvar Alterações';
-        btnSalvar.classList.remove('d-none');
-        btnSalvar.addEventListener('click', function(e){ handler(e, 'salvar'); });
-    }
-    else if (canRequestApproval) {
-        btnSalvar.innerText = 'Solicitar Aprovação';
-        btnSalvar.classList.replace('btn-success','btn-primary');
-        btnSalvar.classList.remove('d-none');
-        btnSalvar.addEventListener('click', function(e){ handler(e, 'solicitar_aprovacao'); });
-    }
-    else { btnSalvar.remove(); }
-    
-    // Garantia extra: se o usuário submeter de outra forma (Enter, etc.)
-    form.addEventListener('submit', function(){
-        window.cohForceSync();
-    });
-  }
-
-  // === Reposiciona o card "Última alteração" logo após a seção de medições ===
-  var secMed      = document.getElementById('sec-med');
-  var lastChange  = document.getElementById('contrato-last-change');
-
-  if (secMed && lastChange) {
-      secMed.insertAdjacentElement('afterend', lastChange);
-      lastChange.classList.remove('d-none');
-  }
-});
-</script>
-
-
-<script>
-// FUNÇÕES GLOBAIS DE RENDERIZAÇÃO (corrigidas)
-(function () {
-
-  function getDraft() {
-    // garante window.COH e window.COH.draft sempre disponíveis
-    if (!window.COH) window.COH = {};
-    if (!window.COH.draft) {
-      window.COH.draft = { medicoes: [], aditivos: [], reajustes: [] };
-    }
-    return window.COH.draft;
-  }
-
-  function renderMed() {
-    if (!window.cohRenderDraft) return;
-    var d = getDraft();
-    window.cohRenderDraft('draft-list-medicoes', d.medicoes);
-  }
-
-  function renderAdi() {
-    if (!window.cohRenderDraft) return;
-    var d = getDraft();
-    window.cohRenderDraft('draft-list-aditivos', d.aditivos);
-  }
-
-  function renderRea() {
-    if (!window.cohRenderDraft) return;
-    var d = getDraft();
-    window.cohRenderDraft('draft-list-reajustes', d.reajustes);
-  }
-
-  // ==== ADD MEDIÇÃO NO RASCUNHO ====
-  window.cohAddMedicao = function (p) {
-    var d = getDraft();
-    var obj = Object.assign(
-      {
-        _label: 'Medição ' + (p.data_medicao || ''),
-        _desc: 'Valor: ' + (p.valor_rs || '')
-      },
-      p
-    );
-    d.medicoes.push(obj);
-    renderMed();
-    if (window.cohForceSync) window.cohForceSync();
-  };
-
-  // ==== ADD ADITIVO NO RASCUNHO ====
-  window.cohAddAditivo = function (p) {
-    var d = getDraft();
-    var obj = Object.assign(
-      {
-        _label: 'Aditivo ' + (p.numero_aditivo || ''),
-        _desc: 'Valor: ' + (p.valor_aditivo_total || '')
-      },
-      p
-    );
-    d.aditivos.push(obj);
-    renderAdi();
-    if (window.cohForceSync) window.cohForceSync();
-  };
-
-  // ==== ADD REAJUSTE NO RASCUNHO ====
-  window.cohAddReajuste = function (p) {
-    var d = getDraft();
-    var obj = Object.assign(
-      {
-        _label: 'Reajuste ' + (p.data_base || p.indice || ''),
-        _desc: 'Perc: ' + (p.percentual || '')
-      },
-      p
-    );
-    d.reajustes.push(obj);
-    renderRea();
-    if (window.cohForceSync) window.cohForceSync();
-  };
-
-})();
-</script>
-
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    function startTimers() {
-        const timers = document.querySelectorAll('.timer-24h');
-        setInterval(() => {
-            timers.forEach(span => {
-                let seconds = parseInt(span.getAttribute('data-seconds'), 10);
-                if (seconds <= 0) {
-                    span.innerHTML = "<span class='text-danger fw-bold'>Tempo esgotado</span>";
-                    var btnGroup = span.closest('td').querySelector('.btn-group');
-                    if(btnGroup) btnGroup.remove();
-                    return;
-                }
-                seconds--; 
-                span.setAttribute('data-seconds', seconds);
-                const h = Math.floor(seconds / 3600);
-                const m = Math.floor((seconds % 3600) / 60);
-                const s = seconds % 60;
-                span.textContent = `Restam: ${h<10?'0'+h:h}:${m<10?'0'+m:m}:${s<10?'0'+s:s}`;
-            });
-        }, 1000);
-    }
-    startTimers();
-});
-
-window.cohDeleteDbItem = function(tipo, id) {
-    if (!confirm('ATENÇÃO: Você excluirá este registro do banco e os totais serão recalculados.\n\nContinuar?')) return;
-
-    const fd = new FormData();
-    fd.append('action', 'delete_item');
-    fd.append('type',   tipo);
-    fd.append('id',     id);
-
-    fetch('ajax/delete_contract_item.php', { method: 'POST', body: fd })
-        .then(r => r.json())
-        .then(d => {
-            if (d.success) {
-                alert('Excluído com sucesso!');
-                location.reload();
-            } else {
-                alert('Erro: ' + (d.message || 'Desconhecido'));
-            }
-        })
-        .catch(e => {
-            alert('Erro de conexão.');
-        });
-};
-
-window.cohEditDbItem = function(tipo, item) {
-    let modalId = '';
-    const fmt = v =>
-        (typeof v === 'number')
-            ? v.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
-            : (v || '');
-
-    if (tipo === 'medicao') {
-        modalId = 'modalMedicao';
-        let root = document.getElementById(modalId);
-        if (root) {
-            let inpData  = root.querySelector('input[name="data_medicao"]');
-            let inpValor = root.querySelector('input[name="valor_rs"]');
-            let txtObs   = root.querySelector('textarea[name="observacao"]');
-
-            if (inpData)  inpData.value  = item.data_medicao ? item.data_medicao.split(' ')[0] : '';
-            if (inpValor) inpValor.value = fmt(item.valor_rs);
-            if (txtObs)   txtObs.value   = item.observacao || '';
-
-            if (inpValor) inpValor.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    }
-    else if (tipo === 'aditivo') {
-        modalId = 'modalAditivo';
-        let root = document.getElementById(modalId);
-        if (root) {
-            let inpNum   = root.querySelector('input[name="numero_aditivo"]');
-            let inpData  = root.querySelector('input[name="data"]');
-            let selTipo  = root.querySelector('select[name="tipo"]');
-            let inpValAd = root.querySelector('input[name="valor_aditivo_total"]');
-            let inpValTot= root.querySelector('input[name="valor_total_apos_aditivo"]');
-            let inpPrazo = root.querySelector('input[name="novo_prazo"]');
-            let txtObs   = root.querySelector('textarea[name="observacao"]');
-
-            if (inpNum)   inpNum.value   = item.numero_aditivo || '';
-            if (inpData)  inpData.value  = item.data || (item.created_at ? item.created_at.split(' ')[0] : '');
-            if (selTipo) {
-                selTipo.value = item.tipo || '';
-                selTipo.dispatchEvent(new Event('change'));
-            }
-            if (inpValAd)  inpValAd.value  = fmt(item.valor_aditivo_total);
-            if (inpValTot) inpValTot.value = fmt(item.valor_total_apos_aditivo);
-            if (inpPrazo)  inpPrazo.value  = item.novo_prazo || '';
-            if (txtObs)    txtObs.value    = item.observacao || '';
-
-            if (inpValAd) inpValAd.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    }
-    else if (tipo === 'reajuste') {
-        modalId = 'modalReajuste';
-        let root = document.getElementById(modalId);
-        if (root) {
-            let inpData  = root.querySelector('input[name="data_base"]');
-            let inpPerc  = root.querySelector('input[name="percentual"]');
-            let inpValTot= root.querySelector('input[name="valor_total_apos_reajuste"]');
-            let txtObs   = root.querySelector('textarea[name="observacao"]');
-
-            if (inpData)  inpData.value  = item.data_base || '';
-            if (inpPerc)  inpPerc.value  = item.percentual ||
-                              (item.reajustes_percentual
-                                  ? String(item.reajustes_percentual).replace('.', ',')
-                                  : '');
-            if (inpValTot) inpValTot.value = fmt(item.valor_total_apos_reajuste);
-            if (txtObs)    txtObs.value    = item.observacao || '';
-
-            if (inpValTot) inpValTot.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-    }
-
-    if (modalId) {
-        let m = bootstrap.Modal.getOrCreateInstance(document.getElementById(modalId));
-        m.show();
-        setTimeout(() => {
-            alert('MODO DE EDIÇÃO:\n\n1. Ajuste os dados.\n2. Salve como NOVO.\n3. Exclua o item antigo da lista.');
-        }, 300);
-    }
-};
+echo '<script src="/assets/js/form_contratos.js?v=' . $__v . '"></script>';
