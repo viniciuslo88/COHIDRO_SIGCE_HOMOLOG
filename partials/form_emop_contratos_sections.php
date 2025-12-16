@@ -269,15 +269,6 @@ if (!function_exists('coh_fiscais_options')) {
 }
 ?>
 
-<style>
-  .coh-rev{border:1px dashed #f59e0b;border-radius:10px;padding:6px}
-  .coh-rev .form-control,.coh-rev .form-select,.coh-rev textarea{background:#fff8e1!important;border-color:#facc15!important}
-  .coh-rev .form-label{font-weight:700;color:#8a6116}
-  .coh-saldo-atualizado{border:2px solid #198754;border-radius:12px;background:#e9f7ef}
-  .coh-saldo-atualizado .form-label{font-weight:700}
-  .coh-saldo-atualizado .form-control{font-size:1.3rem;font-weight:700}
-</style>
-
 <div style="display:none">
   <input type="hidden" name="novas_medicoes_json"  id="novas_medicoes_json" value="[]">
   <input type="hidden" name="novos_aditivos_json"  id="novos_aditivos_json" value="[]">

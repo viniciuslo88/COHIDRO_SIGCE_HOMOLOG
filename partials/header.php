@@ -80,13 +80,6 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     <!-- Seu CSS global -->
     <link rel="stylesheet" href="/assets/app.css" />
 
-    <!-- CSS específico por página (opcional) -->
-    <?php
-      if ($currentPage === 'form_contratos.php') {
-        echo '<link rel="stylesheet" href="/assets/css/form_contratos.css">';
-      }
-    ?>
-
     <!-- Garantias mínimas sem alterar layout -->
     <style>
       .navbar.sticky-top, .navbar.fixed-top { z-index: 1030; }
