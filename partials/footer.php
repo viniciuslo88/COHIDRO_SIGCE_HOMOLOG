@@ -2,12 +2,12 @@
       </main>
     </div> <!-- /.coh-app-main -->
 
-    <footer class="coh-footer mt-auto text-center text-secondary small py-2" style="border-top: 1px solid var(--bs-border-color);">
-      <div class="container-fluid">
-        COHIDRO · Todos os direitos reservados
-        <br>Desenvolvido por Cortex360º
-      </div>
-    </footer>
+        <footer class="coh-footer mt-auto text-center text-secondary small py-2" style="border-top: 1px solid var(--bs-border-color);">
+          <div class="container-fluid">
+            COHIDRO · Todos os direitos reservados
+            <br>Desenvolvido por <a href="https://cortex360.com.br/" target="_blank" style="color: inherit; text-decoration: none;">Cortex360º</a>
+          </div>
+        </footer>
 
   </div> <!-- /.coh-app-wrapper -->
 

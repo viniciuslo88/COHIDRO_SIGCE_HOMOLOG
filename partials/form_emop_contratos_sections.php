@@ -267,6 +267,20 @@ if (!function_exists('coh_fiscais_options')) {
     return $html;
   }
 }
+
+/* ================== Datas em ISO (para Flatpickr/POST) ================== */
+$assinaturaIso = '';
+if (!empty($row['Assinatura_Do_Contrato_Data'])) {
+  $assinaturaIso = substr((string)$row['Assinatura_Do_Contrato_Data'], 0, 10);
+}
+$dataInicioIso = '';
+if (!empty($row['Data_Inicio'])) {
+  $dataInicioIso = substr((string)$row['Data_Inicio'], 0, 10);
+}
+$dataFimPrevIso = '';
+if (!empty($row['Data_Fim_Prevista'])) {
+  $dataFimPrevIso = substr((string)$row['Data_Fim_Prevista'], 0, 10);
+}
 ?>
 
 <div style="display:none">
@@ -313,8 +327,19 @@ if (!function_exists('coh_fiscais_options')) {
       </div>
 
       <div class="col-md-3 <?= coh_has_rev('Assinatura_Do_Contrato_Data')?'coh-rev':'' ?>">
-        <label class="form-label coh-label">Assinatura do Contrato<?= coh_badge_rev('Assinatura_Do_Contrato_Data') ?></label>
-        <input class="form-control date-br" name="Assinatura_Do_Contrato_Data" value="<?= br_date($row['Assinatura_Do_Contrato_Data'] ?? '') ?>">
+        <label class="form-label coh-label">
+          Data Assinatura do Contrato<?= coh_badge_rev('Assinatura_Do_Contrato_Data') ?>
+        </label>
+
+        <input
+          type="text"
+          class="form-control date-br"
+          name="Assinatura_Do_Contrato_Data"
+          placeholder="dd/mm/aaaa"
+          inputmode="numeric"
+          autocomplete="off"
+          value="<?= e($assinaturaIso) ?>"
+        >
       </div>
 
       <div class="col-md-3 <?= coh_has_rev('Status')?'coh-rev':'' ?>">
@@ -494,7 +519,7 @@ if (!function_exists('coh_fiscais_options')) {
     <div class="row g-4">
       <div class="col-md-3 <?= coh_has_rev('Data_Inicio')?'coh-rev':'' ?>">
         <label class="form-label coh-label">Data de Início<?= coh_badge_rev('Data_Inicio') ?></label>
-        <input class="form-control date-br" name="Data_Inicio" value="<?= br_date($row['Data_Inicio'] ?? '') ?>">
+        <input class="form-control date-br" name="Data_Inicio" value="<?= e($dataInicioIso) ?>">
       </div>
 
       <div class="col-md-3 <?= coh_has_rev('Prazo_Obra_Ou_Projeto')?'coh-rev':'' ?>">
@@ -504,7 +529,7 @@ if (!function_exists('coh_fiscais_options')) {
 
       <div class="col-md-3 <?= coh_has_rev('Data_Fim_Prevista')?'coh-rev':'' ?>">
         <label class="form-label coh-label">Término Previsto<?= coh_badge_rev('Data_Fim_Prevista') ?></label>
-        <input class="form-control date-br" name="Data_Fim_Prevista" value="<?= br_date($row['Data_Fim_Prevista'] ?? '') ?>">
+        <input class="form-control date-br" name="Data_Fim_Prevista" value="<?= e($dataFimPrevIso) ?>">
       </div>
     </div>
   </div>
@@ -762,3 +787,10 @@ if (!empty($row) && $contratoId > 0 && isset($conn) && $conn instanceof mysqli) 
     <div class="mt-2 small text-secondary" data-coh-preview="med"></div>
   </div>
 </div>
+
+<script>
+  // Se este partial for inserido/recarregado dinamicamente, garante re-init dos datepickers.
+  (function () {
+    if (window.cohInitContratosDatas) window.cohInitContratosDatas(document);
+  })();
+</script>

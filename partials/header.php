@@ -55,6 +55,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         try {
           if (document.cookie.indexOf('coh_sidebar_state=1') !== -1) {
             document.documentElement.classList.add('sidebar-collapsed');
+            // body ainda pode não existir aqui; mesmo assim mantive sua lógica intacta
             document.body.classList.add('sidebar-collapsed');
           }
         } catch (e) {}
@@ -76,6 +77,11 @@ $currentPage = basename($_SERVER['PHP_SELF']);
       href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css"
       rel="stylesheet"
     />
+
+    <!-- ✅ Flatpickr (calendário para .date-br) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
 
     <!-- Seu CSS global -->
     <link rel="stylesheet" href="/assets/app.css" />

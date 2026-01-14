@@ -199,6 +199,53 @@ try {
   // Saldo atualizado = valor total atualizado - liquidado acumulado
   $saldo_atualizado = $valor_total_atualizado - $resumo_acumulado;
 
+  // ==========================
+  // ÚLTIMA ALTERAÇÃO (AUDITORIA emop_contratos_log) — (NOVO)
+  // ==========================
+  function ensure_contratos_log_schema(mysqli $conn): void {
+    $conn->query("CREATE TABLE IF NOT EXISTS emop_contratos_log (
+      id INT NOT NULL AUTO_INCREMENT,
+      contrato_id INT NOT NULL,
+      usuario_id INT NULL,
+      usuario_nome VARCHAR(150) NULL,
+      diretoria VARCHAR(100) NULL,
+      acao VARCHAR(50) NULL,
+      detalhes TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_contrato (contrato_id),
+      KEY idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+  }
+
+  $lastLog = null;
+  ensure_contratos_log_schema($conn);
+
+  if ($st = $conn->prepare("SELECT usuario_nome, diretoria, acao, detalhes, created_at
+                            FROM emop_contratos_log
+                            WHERE contrato_id=?
+                            ORDER BY created_at DESC, id DESC
+                            LIMIT 1")) {
+    $st->bind_param('i', $id);
+    $st->execute();
+    $rs = $st->get_result();
+    if ($rs && $rs->num_rows) $lastLog = $rs->fetch_assoc();
+    $st->close();
+  }
+
+  $lastChange_dtFmt = '';
+  if (!empty($lastLog['created_at'])) {
+    $ts = strtotime($lastLog['created_at']);
+    if ($ts) $lastChange_dtFmt = date('d/m/Y \à\s H:i', $ts);
+  }
+
+  $lastChange_ultimoCampo = '';
+  if (!empty($lastLog['detalhes'])) {
+    $detLines = preg_split('/\r\n|\r|\n/', (string)$lastLog['detalhes']);
+    if (is_array($detLines) && count($detLines) > 0) {
+      $lastChange_ultimoCampo = trim(end($detLines));
+    }
+  }
 
   // ===== Estilos =====
   ?>
@@ -212,7 +259,7 @@ try {
     .coh-sec .card{ border:none; box-shadow:0 6px 20px rgba(2,6,23,.06); border-radius:12px; }
     .coh-sec .card-body{ border-top:none; border-radius:0 0 12px 12px; }
 
-    .coh-sec--ficha .card-header{ background: linear-gradient(135deg, #010b25, #0a235a); }
+    .coh-sec--ficha .card-header{ say:0; background: linear-gradient(135deg, #010b25, #0a235a); }
     .coh-sec--licit .card-header{ background: linear-gradient(135deg, #102a6b, #1e3a8a); }
     .coh-sec--dados .card-header{ background: linear-gradient(135deg, #2563eb, #60a5fa); }
     .coh-sec--prazo .card-header{ background: linear-gradient(135deg, #93c5fd, #bfdbfe); }
@@ -237,31 +284,25 @@ try {
     .coh-sec { margin-bottom: 18px; }
     @media (min-width: 992px){ .coh-sec { margin-bottom: 22px; } }
 
-    .coh-sec--saldo .card-header{
-      background: linear-gradient(135deg, #4ade80, #bbf7d0);
-      color: #fff;
+    .coh-saldo-pill{
+      border-radius:999px;
+      padding:.55rem .95rem;
+      background:#ecfdf5;
+      border:1px solid #22c55e;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      font-size:.95rem;
+      box-shadow:0 3px 8px rgba(16,185,129,.18);
     }
-    
-      .coh-saldo-pill{
-    border-radius:999px;
-    padding:.55rem .95rem;
-    background:#ecfdf5;
-    border:1px solid #22c55e;
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    font-size:.95rem;
-    box-shadow:0 3px 8px rgba(16,185,129,.18);
-  }
-  .coh-saldo-pill strong{
-    color:#065f46;
-    font-weight:600;
-  }
-  .coh-saldo-pill span.amount{
-    font-size:1.15rem;
-    font-weight:700;
-  }
-
+    .coh-saldo-pill strong{
+      color:#065f46;
+      font-weight:600;
+    }
+    .coh-saldo-pill span.amount{
+      font-size:1.15rem;
+      font-weight:700;
+    }
   </style>
   <?php
 
@@ -281,76 +322,76 @@ try {
 
     <div class="row g-2">
 
-        <!-- 1) DADOS GERAIS -->
-        <div class="col-12 coh-sec coh-sec--ficha">
-          <div class="card">
-            <div class="card-header">Dados Gerais</div>
-            <div class="card-body py-2">
-              <!-- Linha 1: ID / Diretoria / Status / Tipo -->
-              <div class="row small mb-1">
-                <div class="col-md-2">
-                  <strong>ID:</strong> <?= (int)($ctr['id'] ?? $id) ?>
-                </div>
-                <div class="col-md-4">
-                  <strong>Diretoria:</strong> <?= v($ctr,'Diretoria') ?>
-                </div>
-                <div class="col-md-3">
-                  <strong>Status:</strong> <?= v($ctr,'Status') ?>
-                </div>
-                <div class="col-md-3">
-                  <strong>Tipo:</strong> <?= v($ctr,'Tipo') ?>
-                </div>
+      <!-- 1) DADOS GERAIS -->
+      <div class="col-12 coh-sec coh-sec--ficha">
+        <div class="card">
+          <div class="card-header">Dados Gerais</div>
+          <div class="card-body py-2">
+            <!-- Linha 1: ID / Diretoria / Status / Tipo -->
+            <div class="row small mb-1">
+              <div class="col-md-2">
+                <strong>ID:</strong> <?= (int)($ctr['id'] ?? $id) ?>
               </div>
-        
-              <!-- Linha 2: Nº Contrato / Processo SEI / Órgão Demandante -->
-              <div class="row small mb-1">
-                <div class="col-md-3">
-                  <strong>Nº do Contrato:</strong>
-                  <?= v($ctr, 'Numero_Contrato', v($ctr, 'No_do_Contrato')) ?>
-                </div>
-                <div class="col-md-4">
-                  <strong>Processo (SEI):</strong> <?= v($ctr,'Processo_SEI') ?>
-                </div>
-                <div class="col-md-5">
-                  <strong>Órgão Demandante:</strong> <?= v($ctr,'Orgao_Demandante') ?>
-                </div>
+              <div class="col-md-4">
+                <strong>Diretoria:</strong> <?= v($ctr,'Diretoria') ?>
               </div>
-        
-              <!-- Linha 3: Valor / Assinatura -->
-              <div class="row small mb-1">
-                <div class="col-md-4">
-                  <strong>Valor do Contrato (R$):</strong> <?= brl($valor_total_contrato) ?>
-                </div>
-                <div class="col-md-4">
-                  <strong>Assinatura do Contrato:</strong>
-                  <?= dt($ctr['Assinatura_Do_Contrato_Data'] ?? $ctr['Data_Assinatura'] ?? '') ?>
-                </div>
+              <div class="col-md-3">
+                <strong>Status:</strong> <?= v($ctr,'Status') ?>
               </div>
-        
-              <!-- Linha 4: Fonte de Recursos (largura cheia) -->
-              <div class="row small">
-                <div class="col-12">
-                  <strong>Fonte de Recursos:</strong> <?= v($ctr,'Fonte_De_Recursos') ?>
-                </div>
+              <div class="col-md-3">
+                <strong>Tipo:</strong> <?= v($ctr,'Tipo') ?>
               </div>
             </div>
-          </div>
-        </div>
 
-        <!-- 2) PROC. LICITATÓRIO -->
-        <div class="col-12 coh-sec coh-sec--licit">
-          <div class="card">
-            <div class="card-header">Procedimento Licitatório</div>
-            <div class="card-body py-2 small">
-              <div class="row">
-                <div class="col-12">
-                  <strong>Procedimento Licitatório:</strong>
-                  <?= v($ctr,'Procedimento_Licitatorio', v($ctr,'Modalidade')) ?>
-                </div>
+            <!-- Linha 2: Nº Contrato / Processo SEI / Órgão Demandante -->
+            <div class="row small mb-1">
+              <div class="col-md-3">
+                <strong>Nº do Contrato:</strong>
+                <?= v($ctr, 'Numero_Contrato', v($ctr, 'No_do_Contrato')) ?>
+              </div>
+              <div class="col-md-4">
+                <strong>Processo (SEI):</strong> <?= v($ctr,'Processo_SEI') ?>
+              </div>
+              <div class="col-md-5">
+                <strong>Órgão Demandante:</strong> <?= v($ctr,'Orgao_Demandante') ?>
+              </div>
+            </div>
+
+            <!-- Linha 3: Valor / Assinatura -->
+            <div class="row small mb-1">
+              <div class="col-md-4">
+                <strong>Valor do Contrato (R$):</strong> <?= brl($valor_total_contrato) ?>
+              </div>
+              <div class="col-md-4">
+                <strong>Assinatura do Contrato:</strong>
+                <?= dt($ctr['Assinatura_Do_Contrato_Data'] ?? $ctr['Data_Assinatura'] ?? '') ?>
+              </div>
+            </div>
+
+            <!-- Linha 4: Fonte de Recursos (largura cheia) -->
+            <div class="row small">
+              <div class="col-12">
+                <strong>Fonte de Recursos:</strong> <?= v($ctr,'Fonte_De_Recursos') ?>
               </div>
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- 2) PROC. LICITATÓRIO -->
+      <div class="col-12 coh-sec coh-sec--licit">
+        <div class="card">
+          <div class="card-header">Procedimento Licitatório</div>
+          <div class="card-body py-2 small">
+            <div class="row">
+              <div class="col-12">
+                <strong>Procedimento Licitatório:</strong>
+                <?= v($ctr,'Procedimento_Licitatorio', v($ctr,'Modalidade')) ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- 3) DADOS DA OBRA -->
       <div class="col-12 coh-sec coh-sec--dados">
@@ -493,14 +534,16 @@ try {
         <div class="card">
           <div class="card-header">Saldo Contratual</div>
           <div class="card-body py-2 small">
+
             <!-- Linha 1: mesmos campos já existentes -->
             <div class="row mb-2">
               <div class="col-md-3">
                 <strong>Liquidado Acumulado Anterior:</strong>
                 <?php
                   if (!empty($medicoes_calc)) {
-                    $last = end($medicoes_calc);
-                    echo brl($last['liquidado_anterior'] ?? 0);
+                    $tmp = $medicoes_calc;
+                    $lastTmp = end($tmp);
+                    echo brl($lastTmp['liquidado_anterior'] ?? 0);
                   } else {
                     echo brl($ctr['Medicao_Anterior_Acumulada_RS'] ?? 0);
                   }
@@ -535,6 +578,8 @@ try {
                 </div>
               </div>
             </div>
+
+          </div>
         </div>
       </div>
 
@@ -592,14 +637,44 @@ try {
         </div>
       </div>
 
-      <!-- BLOCO FINAL: ÚLTIMA ALTERAÇÃO -->
-      <div class="text-start mt-3 mb-2" style="font-size:0.9rem; color:var(--bs-secondary-color); border-top:1px solid #ddd; padding-top:0.75rem;">
-        <strong>Última alteração:</strong>
-        <?= e($ctr['Ultima_Alteracao'] ?? 'Sem alterações registradas') ?>
+      <!-- BLOCO FINAL: ÚLTIMA ALTERAÇÃO (AUDITORIA) -->
+      <div class="mt-3 mb-2" style="border-top:1px solid #ddd; padding-top:0.75rem;">
+        <?php if (!empty($lastLog)): ?>
+          <div class="card border-0 shadow-sm">
+            <div class="card-body py-2 px-3">
+              <small class="text-muted d-block mb-1">
+                <i class="bi bi-clock-history me-1"></i>Última alteração registrada deste contrato
+              </small>
+
+              <div class="small">
+                <?php
+                  $nome = trim((string)($lastLog['usuario_nome'] ?? ''));
+                  $dir  = trim((string)($lastLog['diretoria'] ?? ''));
+                  if ($nome === '') $nome = 'Usuário não identificado';
+                  echo e($nome);
+                  if ($dir !== '') echo ' — Diretoria ' . e($dir);
+                  if ($lastChange_dtFmt !== '') echo ' — ' . e($lastChange_dtFmt);
+                ?>
+              </div>
+
+              <?php if ($lastChange_ultimoCampo !== ''): ?>
+                <div class="small text-muted mt-1">
+                  <?= e($lastChange_ultimoCampo) ?>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
+        <?php else: ?>
+          <div class="text-start" style="font-size:0.9rem; color:var(--bs-secondary-color);">
+            <strong>Última alteração:</strong> Sem alterações registradas
+          </div>
+        <?php endif; ?>
       </div>
 
-<?php
+    </div><!-- /.row -->
+  </div><!-- /.container -->
 
+<?php
 } catch (Throwable $e) {
   http_response_code(200);
   $msg  = htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');

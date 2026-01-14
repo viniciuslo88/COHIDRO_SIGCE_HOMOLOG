@@ -59,6 +59,33 @@
   }
 
   // =========================
+  // ✅ Datepicker (Flatpickr) para inputs .date-br
+  // =========================
+  function wireDatePickers(root) {
+    root = root || document;
+    const inputs = root.querySelectorAll(".date-br");
+
+    // Se flatpickr estiver disponível, usa calendário
+    if (typeof window.flatpickr === "function") {
+      inputs.forEach((inp) => {
+        if (inp.__cohWiredFlatpickr) return;
+        inp.__cohWiredFlatpickr = true;
+
+        window.flatpickr(inp, {
+          locale: window.flatpickr.l10ns && window.flatpickr.l10ns.pt ? "pt" : undefined,
+          allowInput: true,
+          dateFormat: "d/m/Y", // mantém compatível com seu backend (dd/mm/aaaa)
+          disableMobile: true,
+        });
+      });
+      return;
+    }
+
+    // fallback: máscara digitável
+    wireDateMasks(root);
+  }
+
+  // =========================
   // [PASSO 2] Bootstrapping do workflow (draft + revisão + permissões)
   // =========================
   function initWorkflowFromPageData() {
@@ -105,7 +132,6 @@
   function applyReviewMode(form, reviewId) {
     if (!form || !reviewId) return;
 
-    // injeta hidden review_id (equivalente ao script inline antigo)
     if (!form.querySelector('input[name="review_id"]')) {
       const i = document.createElement("input");
       i.type = "hidden";
@@ -114,7 +140,6 @@
       form.appendChild(i);
     }
 
-    // alerta visual fixo
     if (!document.getElementById("coh-review-banner")) {
       const alertDiv = document.createElement("div");
       alertDiv.id = "coh-review-banner";
@@ -133,7 +158,6 @@
       const el = document.querySelector('[name="' + CSS.escape(String(fieldName)) + '"]');
       if (!el) return;
 
-      // estilo visual igual ao que você tinha inline
       el.style.border = "2px solid #dc3545";
       el.style.backgroundColor = "#fff8f8";
       el.setAttribute("title", "DADO ANTERIOR (RECUSADO). Por favor, corrija.");
@@ -147,7 +171,6 @@
       touched.push(el);
     });
 
-    // rola até o primeiro campo marcado
     if (touched.length) {
       for (let i = 0; i < touched.length; i++) {
         const el = touched[i];
@@ -162,7 +185,6 @@
   function configureSaveButton(form, canEditImmediately, canRequestApproval) {
     if (!form) return;
 
-    // input hidden action
     let hidden = form.querySelector('input[name="action"]');
     if (!hidden) {
       hidden = document.createElement("input");
@@ -177,7 +199,6 @@
     const handler = function (e, actionType) {
       if (e) e.preventDefault();
       cohForceSync();
-
       hidden.value = actionType;
       form.submit();
     };
@@ -195,7 +216,6 @@
       btnSalvar.remove();
     }
 
-    // garantia extra (enter/submit manual)
     form.addEventListener("submit", () => cohForceSync());
   }
 
@@ -209,7 +229,7 @@
   }
 
   // =========================
-  // Máscara data dd/mm/yyyy
+  // Máscara data dd/mm/yyyy (fallback)
   // =========================
   function wireDateMasks(root) {
     (root || document).querySelectorAll(".date-br").forEach((inp) => {
@@ -471,7 +491,6 @@
 
     let currentTotal = baseVal;
 
-    // drafts locais (aditivos/reajustes) se existirem
     if (window.COH && window.COH.draft) {
       const ads = window.COH.draft.aditivos || [];
       const rjs = window.COH.draft.reajustes || [];
@@ -553,7 +572,6 @@
     atualizarValorTotalContrato();
     atualizarPercentuaisSaldo();
 
-    // Ajuste específico do Valor_Do_Contrato (campo sem classe .brl)
     const inpValorContrato = document.querySelector('input[name="Valor_Do_Contrato"]');
     if (inpValorContrato && !inpValorContrato.__cohWiredValorContrato) {
       inpValorContrato.__cohWiredValorContrato = true;
@@ -579,7 +597,6 @@
       });
     }
 
-    // Observa mudanças na tabela de medições
     const secMed = document.getElementById("sec-med");
     const tbody = secMed ? secMed.querySelector("table tbody") : null;
     if (tbody && "MutationObserver" in window && !tbody.__cohWiredObserver) {
@@ -588,7 +605,6 @@
       obs.observe(tbody, { childList: true, subtree: false });
     }
 
-    // Mudanças em hidden json (quando você usa drafts)
     const jsonHiddenMed = document.getElementById("novas_medicoes_json");
     if (jsonHiddenMed && !jsonHiddenMed.__cohWiredMedJson) {
       jsonHiddenMed.__cohWiredMedJson = true;
@@ -607,7 +623,6 @@
       ["change", "input"].forEach((ev) => jsonHiddenReaj.addEventListener(ev, atualizarValorTotalContrato));
     }
 
-    // Recalcula quando mexer nos inputs do saldo
     ["Valor_Do_Contrato", "Valor_Liquidado_Acumulado", "Medicao_Anterior_Acumulada_RS", "Valor_Liquidado_Na_Medicao_RS"].forEach((name) => {
       const el = document.querySelector('input[name="' + name + '"]');
       if (!el) return;
@@ -960,71 +975,49 @@
     });
   }
 
-  function wireFiscais() {
-    const optionsTemplateHtml = getOptionsTemplateHtml();
-    if (!optionsTemplateHtml) return;
-
-    document.addEventListener("change", (ev) => {
-      const sel = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-select") : null;
-      if (!sel) return;
-      showNewInput(sel, false);
-    });
-
-    document.addEventListener("click", async (ev) => {
-      const rm = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-remove") : null;
-      if (rm) {
-        rm.closest(".coh-fiscal-extra-row")?.remove();
-        return;
-      }
-
-      const btnNew = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-new-btn") : null;
-      if (btnNew) {
-        const col = btnNew.closest(".col-md-4");
-        const sel = col ? col.querySelector(".coh-fiscal-select") : null;
+    function wireFiscais() {
+      const optionsTemplateHtml = getOptionsTemplateHtml();
+      if (!optionsTemplateHtml) return;
+    
+      // ✅ GUARD: impede bind duplicado (causa adicionar 2 em 2)
+      if (window.__cohFiscaisWired) return;
+      window.__cohFiscaisWired = true;
+    
+      document.addEventListener("change", (ev) => {
+        const sel = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-select") : null;
         if (!sel) return;
-        sel.value = "__novo__";
-        showNewInput(sel, true);
-        return;
-      }
-
-      const btnEdit = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-edit-btn") : null;
-      if (btnEdit) {
-        const row = btnEdit.closest(".col-md-4, .coh-fiscal-extra-row, .col-12") || document;
-        const sel = row.querySelector(".coh-fiscal-select");
-        try {
-          await promptRenameFromSelect(sel);
-        } catch (e) {
-          alert(e.message || "Não foi possível editar.");
-        }
-        return;
-      }
-
-      if (ev.target && ev.target.id === "coh-add-fiscal-extra") {
-        const wrap = document.getElementById("coh-fiscais-extra-wrap");
-        if (!wrap) return;
-        wrap.appendChild(makeExtraRow(optionsTemplateHtml));
-        return;
-      }
-    });
-
-    document.addEventListener(
-      "keydown",
-      (ev) => {
-        const inp = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-new-input") : null;
-        if (inp && ev.key === "Enter") {
-          ev.preventDefault();
-          inp.blur();
+        showNewInput(sel, false);
+      });
+    
+      document.addEventListener("click", async (ev) => {
+        // ✅ adicionar fiscal extra (robusto: funciona clicando no texto/ícone dentro do botão)
+        const addBtn = ev.target && ev.target.closest ? ev.target.closest("#coh-add-fiscal-extra") : null;
+        if (addBtn) {
+          const wrap = document.getElementById("coh-fiscais-extra-wrap");
+          if (!wrap) return;
+          wrap.appendChild(makeExtraRow(optionsTemplateHtml));
           return;
         }
-
-        const sel = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-select") : null;
-        if (sel && (ev.key === "F2" || (ev.ctrlKey && (ev.key === "e" || ev.key === "E")))) {
-          ev.preventDefault();
-          promptRenameFromSelect(sel).catch((e) => alert(e.message || "Não foi possível editar."));
-        }
-      },
-      true
-    );
+      });
+    
+      document.addEventListener(
+        "keydown",
+        (ev) => {
+          const inp = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-new-input") : null;
+          if (inp && ev.key === "Enter") {
+            ev.preventDefault();
+            inp.blur();
+            return;
+          }
+    
+          const sel = ev.target && ev.target.closest ? ev.target.closest(".coh-fiscal-select") : null;
+          if (sel && (ev.key === "F2" || (ev.ctrlKey && (ev.key === "e" || ev.key === "E")))) {
+            ev.preventDefault();
+            promptRenameFromSelect(sel).catch((e) => alert(e.message || "Não foi possível editar."));
+          }
+        },
+        true
+      );
 
     document.addEventListener(
       "dblclick",
@@ -1070,23 +1063,24 @@
   onDomReady(() => {
     const pd = initWorkflowFromPageData();
 
-    wireDateMasks(document);
+    // ✅ aqui é o ponto principal:
+    // se flatpickr existe -> calendário
+    // se não -> máscara dd/mm/aaaa
+    wireDatePickers(document);
+
     wireBrlMasks(document);
     wirePercMasks(document);
 
     const form = document.getElementById("coh-form") || document.querySelector('form[data-form="emop-contrato"]');
     if (form) {
       ensureHiddenJsonInputs(form);
-      cohForceSync(); // já sincroniza ao carregar
+      cohForceSync();
       configureSaveButton(form, pd.canEdit, pd.canReq);
       if (pd.reviewId) applyReviewMode(form, pd.reviewId);
       wireChangedHighlights(form);
     }
 
-    // renderiza drafts (se existir cohRenderDraft no seu projeto)
     renderDraftSafe();
-
-    // revisões: pinta campos recusados
     highlightRevisionFields(pd.changed || []);
 
     wireMedicaoModalLocal();
